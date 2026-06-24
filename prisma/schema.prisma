@@ -13,7 +13,7 @@ datasource db {
 
 // Placeholder para o Prisma não reclamar de schema sem models.
 // Pode ser deletado assim que o primeiro model real for criado.
-model _Health {
+model HealthCheck {
   id        Int      @id @default(autoincrement())
   checkedAt DateTime @default(now())
 }
