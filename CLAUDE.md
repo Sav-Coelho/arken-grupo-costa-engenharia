@@ -2,41 +2,42 @@
 
 Guidance for Claude Code working in this repo.
 
-## Status
+## Visão geral
 
-**Esqueleto inicial.** Plataforma Arken para o Grupo Costa Engenharia, sem módulos de negócio
-ainda. A casca visual (layout, Shell, identidade Arken) está pronta — os módulos serão
-definidos com o cliente.
+Plataforma Arken para o Grupo Costa Engenharia.
+
+**Módulo 1 — Pessoal por Obra** (`/pessoal-obra`)
+- Importa XLSX mensal de RH com layout colaborador × dia
+- Mapeia "aliases" de obras (nomes curtos na planilha) para a obra cadastrada
+- Dashboard: heatmap colaborador × dia, KPIs, distribuição por função, top faltas
+
+**Módulo 2 — Obras Ativas** (`/obras`)
+- Cadastro de obras via upload do XLSX "Obras Ativas ECF" do ERP
+- Upsert por código; obras encerradas viram inativas
 
 ## Commands
 
 ```bash
 npm run dev          # dev server em http://localhost:3000
 npm run build        # build de produção (roda: prisma generate && prisma db push && next build)
-npm run db:studio    # Prisma Studio (editor visual do banco)
+npm run db:studio    # Prisma Studio
 git push             # dispara deploy automático na Vercel
 ```
 
 Sem suíte de testes. Type-check via `npm run build`.
 
-## Architecture
+## Stack
 
-Next.js 14 App Router — páginas e API routes no mesmo projeto. Sem auth. Deploy Vercel,
-banco Neon Postgres (`sa-east-1`).
-
-**Env vars principais:**
-- `DATABASE_URL` — URL pooled do Neon (runtime)
-- `DIRECT_URL` — URL direta do Neon (usada por `prisma db push` no build)
-
-Schema gerenciado com `prisma db push` (sem arquivos de migration).
+Next.js 14 App Router + Prisma + Neon Postgres + Recharts + xlsx. Sem auth.
+Env vars: `DATABASE_URL` (pooled) e `DIRECT_URL` (direct, usado pelo `prisma db push` no build).
 
 ## Restrição TypeScript
 
-Target de build da Vercel **não** suporta `for...of` em `Map`/`Set` nem spread de `Set`.
-Sempre use `Array.from()`:
+Target ES5 da Vercel **não** suporta `for...of` em `Map`/`Set` nem spread de `Set`.
+Use `Array.from()`:
 
 ```typescript
-// ❌ quebra no build da Vercel
+// ❌ quebra no build
 const arr = [...set]
 for (const [k, v] of map) { }
 
@@ -45,17 +46,28 @@ const arr = Array.from(set)
 Array.from(map.entries()).forEach(([k, v]) => { })
 ```
 
+## Data Model
+
+**Project** — obra ativa. `code` único (vem do ERP), `name`, `active`, `aliases[]`, `allocations[]`.
+
+**ProjectAlias** — nomes curtos da planilha de pessoal mapeados pra um `Project`. Ex: `"BUTANTAN - SPCI"` → projeto 5013.
+
+**Worker** — colaborador, único por nome. Tem `role` (cargo).
+
+**Allocation** — 1 registro por colaborador × dia. Campos: `workerId`, `date`, `year`, `month`, `projectId` (null para status de ausência), `status` (`PRESENT | WEEKEND | DAY_OFF | ABSENCE_JUSTIFIED | ABSENCE_UNJUSTIFIED | TERMINATED`), `rawValue` (cell original pra auditoria).
+
+## Fluxo de Importação (Pessoal)
+
+1. `POST /api/personnel/parse` recebe XLSX + year + month. Lê linhas (col A=nome, B=função, C-AG=dias). Classifica cada célula em status e detecta `uniqueAliases` (nomes de obras). Devolve preview + `pendingAliases` (não mapeados) + projetos ativos pro dropdown.
+2. UI mostra mapeamento pendente. Analista escolhe a obra pra cada alias novo.
+3. `POST /api/personnel/save` valida que todos os aliases têm mapeamento, faz upsert dos `Worker` por nome, persiste novos `ProjectAlias`, e faz **wipe-and-replace** das `Allocation` por `(year, month)`.
+
+## Dashboard `/pessoal-obra` (Visão Geral)
+
+`GET /api/personnel/series?year=X&month=Y&projectIds=1,3` devolve allocations achatadas + projetos + KPIs em 1 request. Componente `Heatmap` renderiza grid sticky de N×31 (workers × dias) com cor por obra.
+
 ## UI Patterns
 
-Sem biblioteca de UI — estilos inline + classes em `globals.css`: `.card`, `.btn`,
-`.btn-primary`, `.btn-danger`, `.btn-sm`, `.form-select`, `.form-input`, `.table-wrap`,
-`.toast`, `.page-header`, `.page-title`, `.empty-state`.
+Sem biblioteca de UI — estilos inline + classes em `globals.css`: `.card`, `.btn`, `.btn-primary`, `.btn-sm`, `.form-select`, `.form-input`, `.table-wrap`, `.toast`, `.page-header`, `.page-title`, `.empty-state`, `.card-accent-yellow`.
 
-Identidade Arken: fonte serif **DM Serif Display** (`--font-serif`), navy `#0a2540`
-(`--arken-navy`), amarelo `#f5c518` (`--arken-yellow`).
-
-## Próximos passos
-
-1. Definir o primeiro módulo com o cliente.
-2. Remover o model `_Health` placeholder do schema quando entrar o primeiro model real.
-3. Adicionar entrada no `NAV` em `src/components/Shell.tsx` para cada módulo novo.
+Identidade Arken: navy `#0a2540`, amarelo `#f5c518`, serif DM Serif Display, sans Inter.

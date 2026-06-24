@@ -1,5 +1,5 @@
-// Schema inicial — vazio de propósito.
-// Adicione models conforme os módulos forem definidos com o cliente.
+// Schema do Arken — Grupo Costa Engenharia
+// Módulo 1: Gestão de Pessoal por Obra
 
 generator client {
   provider = "prisma-client-js"
@@ -11,9 +11,56 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-// Placeholder para o Prisma não reclamar de schema sem models.
-// Pode ser deletado assim que o primeiro model real for criado.
-model HealthCheck {
+// Obra ativa (vinda da planilha "Obras Ativas ECF")
+model Project {
+  id          Int            @id @default(autoincrement())
+  code        String         @unique          // ex: "5013"
+  name        String                          // ex: "02.201.0097 - BUTANTAN - SPCI E SPDA"
+  active      Boolean        @default(true)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  aliases     ProjectAlias[]
+  allocations Allocation[]
+}
+
+// Mapeamento de nomes curtos usados na planilha de pessoal
+// (ex: "BUTANTAN - SPCI" → projeto 5013)
+model ProjectAlias {
+  id        Int     @id @default(autoincrement())
+  alias     String  @unique
+  projectId Int
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+// Colaborador (extraído da coluna A da planilha de pessoal)
+model Worker {
+  id          Int          @id @default(autoincrement())
+  name        String       @unique
+  role        String?                      // função/cargo (coluna B; pode mudar entre meses)
+  active      Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  allocations Allocation[]
+}
+
+// 1 registro por colaborador × dia
+// status PRESENT → projectId obrigatório (alocado na obra)
+// status WEEKEND/DAY_OFF/ABSENCE_JUSTIFIED/ABSENCE_UNJUSTIFIED/TERMINATED → projectId null
+model Allocation {
   id        Int      @id @default(autoincrement())
-  checkedAt DateTime @default(now())
+  workerId  Int
+  worker    Worker   @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  date      DateTime @db.Date
+  year      Int
+  month     Int                              // 1-12
+  projectId Int?
+  project   Project? @relation(fields: [projectId], references: [id])
+  status    String                           // PRESENT | WEEKEND | DAY_OFF | ABSENCE_JUSTIFIED | ABSENCE_UNJUSTIFIED | TERMINATED
+  rawValue  String?                          // valor original da célula (auditoria)
+  createdAt DateTime @default(now())
+
+  @@unique([workerId, date])
+  @@index([year, month])
+  @@index([date])
+  @@index([projectId, date])
 }

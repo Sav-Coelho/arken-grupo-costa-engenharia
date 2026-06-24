@@ -3,9 +3,10 @@ import { usePathname, useRouter } from 'next/navigation'
 
 const COMPANY_NAME = 'Grupo Costa Engenharia'
 
-// Adicione módulos aqui conforme forem criados.
-// Ex: { href: '/modulo-x', icon: '◈', label: 'Módulo X' }
-const NAV: { href: string; icon: string; label: string }[] = []
+const NAV: { href: string; icon: string; label: string }[] = [
+  { href: '/pessoal-obra', icon: '◈', label: 'Pessoal por Obra' },
+  { href: '/obras',        icon: '◆', label: 'Obras Ativas'     },
+]
 
 export default function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
