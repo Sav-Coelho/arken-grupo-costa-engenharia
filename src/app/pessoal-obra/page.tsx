@@ -921,7 +921,7 @@ function ViewPanel({
               <div className="card-header">
                 <div>
                   <div className="card-eyebrow" style={{ color: C.red }}>Chegaram depois</div>
-                  <div className="card-title">Não estavam na foto, mas aparecem no fechamento</div>
+                  <div className="card-title">Não Estamos Durante Registro</div>
                 </div>
               </div>
               <div style={{ fontSize: 13, color: C.textSoft }}>
