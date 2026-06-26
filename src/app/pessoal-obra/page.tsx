@@ -57,13 +57,17 @@ type ParsedWorker = {
   allocations: { day: number; date: string; status: string; alias: string | null; rawValue: string }[]
 }
 type ParseResponse = {
-  year: number; month: number; daysInMonth: number
+  year: number; month: number; day: number | null; daysInMonth: number
   workers: ParsedWorker[]
   uniqueAliases: string[]
   existingMappings: Record<string, number>
   pendingAliases: string[]
   activeProjects: { id: number; code: string; name: string }[]
   summary: { workerCount: number; totalPresent: number; totalAbsent: number; totalTerminated: number }
+}
+
+function daysInMonthOf(year: number, month: number): number {
+  return new Date(year, month, 0).getDate()
 }
 
 const fmtPct = (n: number) => `${(n * 100).toFixed(1)}%`
@@ -168,12 +172,16 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
   const today = new Date()
   const [year, setYear] = useState(today.getFullYear())
   const [month, setMonth] = useState(today.getMonth() + 1)
+  const [mode, setMode] = useState<'month' | 'day'>('month')
+  const [day, setDay] = useState(today.getDate())
   const [drag, setDrag] = useState(false)
   const [parsing, setParsing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [preview, setPreview] = useState<ParseResponse | null>(null)
   const [pendingMap, setPendingMap] = useState<Record<string, number>>({})
   const fileRef = useRef<HTMLInputElement>(null)
+
+  const dim = daysInMonthOf(year, month)
 
   const handleFile = async (f?: File | null) => {
     if (!f) return
@@ -182,6 +190,7 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
     fd.append('file', f)
     fd.append('year', String(year))
     fd.append('month', String(month))
+    if (mode === 'day') fd.append('day', String(day))
     const r = await fetch('/api/personnel/parse', { method: 'POST', body: fd })
     const d = await r.json()
     setParsing(false)
@@ -202,7 +211,7 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
     const r = await fetch('/api/personnel/save', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        year: preview.year, month: preview.month,
+        year: preview.year, month: preview.month, day: preview.day,
         workers: preview.workers,
         aliasMappings: combined,
       }),
@@ -210,7 +219,8 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
     const d = await r.json()
     setSaving(false)
     if (!r.ok) { showToast(`Erro: ${d.error}`); return }
-    showToast(`✓ ${d.workersUpserted} colaboradores · ${d.allocationsInserted} alocações`)
+    const scope = preview.day != null ? `dia ${preview.day}/${preview.month}` : `${MONTH_NAMES[preview.month]}/${preview.year}`
+    showToast(`✓ ${scope}: ${d.workersUpserted} colaboradores · ${d.allocationsInserted} alocações`)
     setPreview(null)
     onSaved(preview.year, preview.month)
   }
@@ -227,22 +237,59 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
         <p style={{ fontSize: 13, color: C.textSoft, lineHeight: 1.6, marginBottom: 20 }}>
           Selecione o <b>mês/ano</b> da planilha e suba o arquivo. O sistema lê uma linha por
           colaborador (col A = nome, col B = função, col C–AG = dias). Cada célula vira uma
-          alocação diária. Importações posteriores do mesmo mês <b>substituem</b> as anteriores.
+          alocação diária.
+          {' '}Use <b>Dia específico</b> pra subir apenas a coluna de um dia (atualização diária)
+          ou <b>Mês inteiro</b> pra sobrescrever tudo do mês.
         </p>
 
-        <div style={{ display: 'flex', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <div>
             <label className="form-label">Mês *</label>
-            <select className="form-select" value={month} onChange={e => setMonth(Number(e.target.value))} style={{ width: 200 }}>
+            <select className="form-select" value={month} onChange={e => setMonth(Number(e.target.value))} style={{ width: 180 }}>
               {MONTH_NAMES.slice(1).map((n, i) => <option key={i+1} value={i+1}>{n}</option>)}
             </select>
           </div>
           <div>
             <label className="form-label">Ano *</label>
-            <select className="form-select" value={year} onChange={e => setYear(Number(e.target.value))} style={{ width: 120 }}>
+            <select className="form-select" value={year} onChange={e => setYear(Number(e.target.value))} style={{ width: 110 }}>
               {[year-2, year-1, year, year+1].map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
+          <div>
+            <label className="form-label">Escopo da importação *</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button type="button"
+                className={mode === 'month' ? 'btn btn-primary' : 'btn'}
+                onClick={() => setMode('month')}>
+                Mês inteiro
+              </button>
+              <button type="button"
+                className={mode === 'day' ? 'btn btn-primary' : 'btn'}
+                onClick={() => setMode('day')}>
+                Dia específico
+              </button>
+            </div>
+          </div>
+          {mode === 'day' && (
+            <div>
+              <label className="form-label">Dia *</label>
+              <select className="form-select" value={day} onChange={e => setDay(Number(e.target.value))} style={{ width: 90 }}>
+                {Array.from({ length: dim }, (_, i) => i + 1).map(d => (
+                  <option key={d} value={d}>{String(d).padStart(2, '0')}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+
+        <div style={{
+          marginBottom: 20, padding: '10px 14px', background: mode === 'day' ? '#fff8e1' : '#f4f7fb',
+          borderLeft: `3px solid ${mode === 'day' ? C.gold : C.navy}`,
+          fontSize: 12, color: C.textSoft, lineHeight: 1.5,
+        }}>
+          {mode === 'month'
+            ? <>📅 <b>Substituição completa</b> — todas as alocações de {MONTH_NAMES[month]}/{year} serão apagadas e regravadas pela planilha.</>
+            : <>📆 <b>Atualização diária</b> — apenas as alocações do dia {String(day).padStart(2, '0')}/{String(month).padStart(2, '0')}/{year} serão tocadas. Os outros dias do mês ficam intactos.</>}
         </div>
 
         <div
@@ -276,7 +323,11 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
     <div className="card mb-6">
       <div className="card-header">
         <div>
-          <div className="card-eyebrow">Prévia · {MONTH_NAMES[preview.month]}/{preview.year}</div>
+          <div className="card-eyebrow">
+            Prévia · {preview.day != null
+              ? `Dia ${String(preview.day).padStart(2, '0')}/${String(preview.month).padStart(2, '0')}/${preview.year}`
+              : `${MONTH_NAMES[preview.month]}/${preview.year}`}
+          </div>
           <div className="card-title">
             {preview.summary.workerCount} colaboradores · {preview.uniqueAliases.length} obra(s) detectada(s)
           </div>
@@ -390,6 +441,8 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
 // ──────────────────────────────────────────────────────────
 //  VIEW PANEL
 // ──────────────────────────────────────────────────────────
+type Granularity = 'month' | 'week' | 'day'
+
 function ViewPanel({
   series, selectedProjectIds, onToggleProject, onClearProjects, onSetPeriod,
 }: {
@@ -399,6 +452,10 @@ function ViewPanel({
   onClearProjects: () => void
   onSetPeriod: (year: number, month: number) => void
 }) {
+  const [granularity, setGranularity] = useState<Granularity>('month')
+  const [weekIndex, setWeekIndex] = useState(0)            // 0..N-1 (W1, W2, …)
+  const [dayIndex, setDayIndex] = useState(1)              // 1..dim
+
   if (series.availablePeriods.length === 0) {
     return (
       <div className="card">
@@ -413,6 +470,31 @@ function ViewPanel({
     )
   }
 
+  const dim = series.daysInMonth
+  const totalWeeks = Math.max(1, Math.ceil(dim / 7))
+
+  // Lista de dias visíveis conforme granularidade selecionada
+  const visibleDays = useMemo(() => {
+    if (granularity === 'day') {
+      const d = Math.min(Math.max(dayIndex, 1), dim)
+      return [d]
+    }
+    if (granularity === 'week') {
+      const wi = Math.min(Math.max(weekIndex, 0), totalWeeks - 1)
+      const start = wi * 7 + 1
+      const end = Math.min(start + 6, dim)
+      return Array.from({ length: end - start + 1 }, (_, i) => start + i)
+    }
+    return Array.from({ length: dim }, (_, i) => i + 1)
+  }, [granularity, weekIndex, dayIndex, dim, totalWeeks])
+
+  const visibleDaysSet = useMemo(() => new Set(visibleDays), [visibleDays])
+
+  // Allocations filtradas pelo range
+  const effectiveAllocations = useMemo(() => {
+    return series.allocations.filter(a => visibleDaysSet.has(a.day))
+  }, [series.allocations, visibleDaysSet])
+
   // Mapa projectId → cor
   const projectColors = useMemo(() => {
     const m: Record<number, string> = {}
@@ -420,17 +502,23 @@ function ViewPanel({
     return m
   }, [series.projects])
 
-  // Workers visíveis: se filtro ativo, só os que têm pelo menos 1 alocação filtrada (PRESENT no projeto selecionado)
+  // Workers visíveis: filtro de obra + filtro de range
   const visibleWorkers = useMemo(() => {
-    if (selectedProjectIds.size === 0) return series.workers
+    if (selectedProjectIds.size === 0) {
+      // Granularidade mais estreita que mês: só mostra quem tem alocação no range
+      if (granularity === 'month') return series.workers
+      const ids = new Set<number>()
+      effectiveAllocations.forEach(a => { ids.add(a.workerId) })
+      return series.workers.filter(w => ids.has(w.id))
+    }
     const ids = new Set<number>()
-    series.allocations.forEach(a => {
+    effectiveAllocations.forEach(a => {
       if (a.projectId != null && selectedProjectIds.has(a.projectId)) ids.add(a.workerId)
     })
     return series.workers.filter(w => ids.has(w.id))
-  }, [series, selectedProjectIds])
+  }, [series.workers, effectiveAllocations, selectedProjectIds, granularity])
 
-  // Allocs indexed: [workerId][day] → AllocRow
+  // Allocs indexed: [workerId][day] → AllocRow (índice completo, filtragem visual fica no Heatmap)
   const allocIndex = useMemo(() => {
     const idx: Record<number, Record<number, AllocRow>> = {}
     series.allocations.forEach(a => {
@@ -438,12 +526,26 @@ function ViewPanel({
       idx[a.workerId][a.day] = a
     })
     return idx
-  }, [series])
+  }, [series.allocations])
 
-  const totalUtilDias = (series.summary.presentDays + series.summary.absenceJustified + series.summary.absenceUnjustified) || 1
-  const presenceRate = series.summary.presentDays / totalUtilDias
+  // Summary recalculado em cima das allocations efetivas
+  const effectiveSummary = useMemo(() => {
+    let presentDays = 0, absenceJustified = 0, absenceUnjustified = 0, terminated = 0, dayOff = 0, weekend = 0
+    for (const a of effectiveAllocations) {
+      if (a.status === 'PRESENT') presentDays++
+      else if (a.status === 'ABSENCE_JUSTIFIED') absenceJustified++
+      else if (a.status === 'ABSENCE_UNJUSTIFIED') absenceUnjustified++
+      else if (a.status === 'TERMINATED') terminated++
+      else if (a.status === 'DAY_OFF') dayOff++
+      else if (a.status === 'WEEKEND') weekend++
+    }
+    return { presentDays, absenceJustified, absenceUnjustified, terminated, dayOff, weekend }
+  }, [effectiveAllocations])
 
-  // Distribuição por função (top funções)
+  const totalUtilDias = (effectiveSummary.presentDays + effectiveSummary.absenceJustified + effectiveSummary.absenceUnjustified) || 1
+  const presenceRate = effectiveSummary.presentDays / totalUtilDias
+
+  // Distribuição por função (top funções) — restrita aos workers visíveis
   const roleDistribution = useMemo(() => {
     const counts: Record<string, number> = {}
     visibleWorkers.forEach(w => {
@@ -455,10 +557,10 @@ function ViewPanel({
       .sort((a, b) => b.count - a.count)
   }, [visibleWorkers])
 
-  // Top faltas por colaborador
+  // Top faltas por colaborador (no range filtrado)
   const topAbsences = useMemo(() => {
     return visibleWorkers.map(w => {
-      const days = series.allocations.filter(a => a.workerId === w.id)
+      const days = effectiveAllocations.filter(a => a.workerId === w.id)
       const justif = days.filter(a => a.status === 'ABSENCE_JUSTIFIED').length
       const naoJustif = days.filter(a => a.status === 'ABSENCE_UNJUSTIFIED').length
       return { name: w.name, justif, naoJustif, total: justif + naoJustif }
@@ -466,12 +568,12 @@ function ViewPanel({
       .filter(w => w.total > 0)
       .sort((a, b) => b.total - a.total)
       .slice(0, 10)
-  }, [visibleWorkers, series])
+  }, [visibleWorkers, effectiveAllocations])
 
-  // Dias-homem por obra
+  // Dias-homem por obra (no range filtrado)
   const daysByProject = useMemo(() => {
     const counts: Record<number, number> = {}
-    series.allocations.forEach(a => {
+    effectiveAllocations.forEach(a => {
       if (a.status === 'PRESENT' && a.projectId != null) {
         counts[a.projectId] = (counts[a.projectId] || 0) + 1
       }
@@ -487,16 +589,33 @@ function ViewPanel({
         fill: projectColors[Number(pid)] || C.navy,
       }
     }).sort((a, b) => b.days - a.days)
-  }, [series, projectColors])
+  }, [effectiveAllocations, series.projects, projectColors])
+
+  // Label do range (pra título do heatmap)
+  const rangeLabel = useMemo(() => {
+    const monthLabel = `${MONTH_NAMES[series.month!]}/${series.year}`
+    if (granularity === 'month') return monthLabel
+    if (granularity === 'day') {
+      const d = String(dayIndex).padStart(2, '0')
+      const m = String(series.month!).padStart(2, '0')
+      return `Dia ${d}/${m}/${series.year}`
+    }
+    const start = weekIndex * 7 + 1
+    const end = Math.min(start + 6, dim)
+    const m = String(series.month!).padStart(2, '0')
+    return `Semana ${weekIndex + 1} (${String(start).padStart(2, '0')}–${String(end).padStart(2, '0')}/${m}/${series.year})`
+  }, [granularity, weekIndex, dayIndex, dim, series.month, series.year])
+
+  const subUnit = granularity === 'day' ? 'no dia' : granularity === 'week' ? 'na semana' : 'no mês'
 
   return (
     <>
-      {/* Período + filtros de obra */}
+      {/* Período + granularidade + filtros de obra */}
       <div className="card mb-6">
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 24, flexWrap: 'wrap' }}>
           <div>
             <div className="card-eyebrow" style={{ marginBottom: 8 }}>Período</div>
-            <select className="form-select" style={{ width: 220 }}
+            <select className="form-select" style={{ width: 200 }}
                     value={`${series.year}-${series.month}`}
                     onChange={e => {
                       const [y, m] = e.target.value.split('-').map(Number)
@@ -509,6 +628,53 @@ function ViewPanel({
               ))}
             </select>
           </div>
+
+          <div>
+            <div className="card-eyebrow" style={{ marginBottom: 8 }}>Granularidade</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {(['month', 'week', 'day'] as Granularity[]).map(g => (
+                <button key={g}
+                  className={granularity === g ? 'btn btn-primary btn-sm' : 'btn btn-sm'}
+                  onClick={() => setGranularity(g)}>
+                  {g === 'month' ? 'Mês' : g === 'week' ? 'Semana' : 'Dia'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {granularity === 'week' && (
+            <div>
+              <div className="card-eyebrow" style={{ marginBottom: 8 }}>Semana</div>
+              <select className="form-select" style={{ width: 200 }}
+                      value={weekIndex}
+                      onChange={e => setWeekIndex(Number(e.target.value))}>
+                {Array.from({ length: totalWeeks }, (_, i) => {
+                  const start = i * 7 + 1
+                  const end = Math.min(start + 6, dim)
+                  return (
+                    <option key={i} value={i}>
+                      Semana {i + 1} ({String(start).padStart(2, '0')}–{String(end).padStart(2, '0')})
+                    </option>
+                  )
+                })}
+              </select>
+            </div>
+          )}
+
+          {granularity === 'day' && (
+            <div>
+              <div className="card-eyebrow" style={{ marginBottom: 8 }}>Dia</div>
+              <select className="form-select" style={{ width: 100 }}
+                      value={dayIndex}
+                      onChange={e => setDayIndex(Number(e.target.value))}>
+                {Array.from({ length: dim }, (_, i) => i + 1).map(d => {
+                  const wd = new Date(Date.UTC(series.year!, series.month! - 1, d)).getUTCDay()
+                  const wdName = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'][wd]
+                  return <option key={d} value={d}>{String(d).padStart(2, '0')} · {wdName}</option>
+                })}
+              </select>
+            </div>
+          )}
 
           <div style={{ flex: 1, minWidth: 320 }}>
             <div className="card-eyebrow" style={{ marginBottom: 8 }}>Obras</div>
@@ -548,11 +714,11 @@ function ViewPanel({
       {/* KPIs */}
       <div className="grid-4 mb-6" style={{ gap: 18 }}>
         <KpiBig label="Colaboradores" value={String(visibleWorkers.length)} sub={`${series.summary.workerCount} total no mês`} color={C.navy} />
-        <KpiBig label="Dias-homem trabalhados" value={String(series.summary.presentDays)} sub="presenças efetivas" color={C.green} />
+        <KpiBig label="Dias-homem trabalhados" value={String(effectiveSummary.presentDays)} sub={`presenças efetivas ${subUnit}`} color={C.green} />
         <KpiBig label="Taxa de presença" value={fmtPct(presenceRate)} sub="presença ÷ dias úteis registrados" color={presenceRate > 0.9 ? C.green : presenceRate > 0.75 ? C.amber : C.red} />
-        <KpiBig label="Faltas no mês" value={String(series.summary.absenceJustified + series.summary.absenceUnjustified)}
-                sub={`${series.summary.absenceJustified} justif. · ${series.summary.absenceUnjustified} não justif.`}
-                color={series.summary.absenceUnjustified > series.summary.absenceJustified ? C.red : C.amber} />
+        <KpiBig label={`Faltas ${subUnit}`} value={String(effectiveSummary.absenceJustified + effectiveSummary.absenceUnjustified)}
+                sub={`${effectiveSummary.absenceJustified} justif. · ${effectiveSummary.absenceUnjustified} não justif.`}
+                color={effectiveSummary.absenceUnjustified > effectiveSummary.absenceJustified ? C.red : C.amber} />
       </div>
 
       {/* HEATMAP — peça central */}
@@ -560,18 +726,18 @@ function ViewPanel({
         <div className="card-header">
           <div>
             <div className="card-eyebrow">Visualização principal</div>
-            <div className="card-title">Heatmap de Alocação — {MONTH_NAMES[series.month!]}/{series.year}</div>
+            <div className="card-title">Heatmap de Alocação — {rangeLabel}</div>
           </div>
         </div>
         <p style={{ fontSize: 12, color: C.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
-          Cada linha é um colaborador, cada coluna um dia do mês. Cor da célula = obra alocada.
+          Cada linha é um colaborador, cada coluna um dia. Cor da célula = obra alocada.
           Vermelho = falta não justificada, laranja = falta justificada, preto = desligado, cinza = fim de semana/folga.
           Passe o mouse pra detalhes.
         </p>
         <Heatmap
           workers={visibleWorkers}
           allocIndex={allocIndex}
-          daysInMonth={series.daysInMonth}
+          days={visibleDays}
           year={series.year!}
           month={series.month!}
           projects={series.projects}
@@ -655,11 +821,11 @@ function ViewPanel({
             <PieChart>
               <Pie
                 data={[
-                  { name: 'Trabalhou', value: series.summary.presentDays, color: C.green },
-                  { name: 'Falta justif.', value: series.summary.absenceJustified, color: C.amber },
-                  { name: 'Falta não justif.', value: series.summary.absenceUnjustified, color: C.red },
-                  { name: 'Desligado', value: series.summary.terminated, color: C.terminatedBg },
-                  { name: 'Folga / fim de semana', value: series.summary.dayOff + series.summary.weekend, color: C.dayOffBg },
+                  { name: 'Trabalhou', value: effectiveSummary.presentDays, color: C.green },
+                  { name: 'Falta justif.', value: effectiveSummary.absenceJustified, color: C.amber },
+                  { name: 'Falta não justif.', value: effectiveSummary.absenceUnjustified, color: C.red },
+                  { name: 'Desligado', value: effectiveSummary.terminated, color: C.terminatedBg },
+                  { name: 'Folga / fim de semana', value: effectiveSummary.dayOff + effectiveSummary.weekend, color: C.dayOffBg },
                 ].filter(d => d.value > 0)}
                 dataKey="value"
                 nameKey="name"
@@ -714,17 +880,18 @@ function ViewPanel({
 //  HEATMAP
 // ──────────────────────────────────────────────────────────
 function Heatmap({
-  workers, allocIndex, daysInMonth, year, month, projects, projectColors,
+  workers, allocIndex, days, year, month, projects, projectColors,
 }: {
   workers: WorkerRow[]
   allocIndex: Record<number, Record<number, AllocRow>>
-  daysInMonth: number
+  days: number[]
   year: number; month: number
   projects: Project[]
   projectColors: Record<number, string>
 }) {
-  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1)
-  const cellW = 22, cellH = 22, nameW = 220, roleW = 0  // role compactada no tooltip
+  // Quanto menos dias, mais larga a célula pra preencher melhor a área
+  const cellW = days.length <= 1 ? 80 : days.length <= 7 ? 48 : 22
+  const cellH = 22, nameW = 220
 
   const projectById: Record<number, Project> = {}
   projects.forEach(p => { projectById[p.id] = p })

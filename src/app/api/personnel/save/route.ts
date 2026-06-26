@@ -14,6 +14,7 @@ export async function POST(req: Request) {
   const body = await req.json() as {
     year: number
     month: number
+    day?: number | null                        // se passado, wipe-and-replace apenas desse dia
     workers: ParsedWorker[]
     aliasMappings: Record<string, number>      // alias → projectId (vindo de mapeamentos novos + existentes)
   }
@@ -21,6 +22,7 @@ export async function POST(req: Request) {
   if (!body.year || !body.month) {
     return NextResponse.json({ error: 'Ano/mês obrigatórios' }, { status: 400 })
   }
+  const day = body.day ?? null
 
   // Valida que todo alias usado tem mapeamento
   const usedAliases = new Set<string>()
@@ -78,11 +80,17 @@ export async function POST(req: Request) {
     }
   }
 
-  // Wipe-and-replace das allocations do mês/ano
+  // Wipe-and-replace das allocations.
+  //  - Sem `day`: substitui todas as allocations de (year, month).
+  //  - Com `day`: substitui apenas as do dia específico — dias restantes ficam intactos.
   const result = await prisma.$transaction(async tx => {
-    const del = await tx.allocation.deleteMany({
-      where: { year: body.year, month: body.month },
-    })
+    const whereDelete: { year: number; month: number; date?: Date } = {
+      year: body.year, month: body.month,
+    }
+    if (day != null) {
+      whereDelete.date = new Date(`${body.year}-${String(body.month).padStart(2, '0')}-${String(day).padStart(2, '0')}T00:00:00Z`)
+    }
+    const del = await tx.allocation.deleteMany({ where: whereDelete })
 
     const rows: {
       workerId: number; date: Date; year: number; month: number;
@@ -91,6 +99,11 @@ export async function POST(req: Request) {
     for (const w of body.workers) {
       const workerId = workerIdByName[w.name]
       for (const a of w.allocations) {
+        // Se day foi passado, o parser já filtrou — mas dupla checagem aqui pra segurança
+        if (day != null) {
+          const allocDay = parseInt(a.date.slice(-2), 10)
+          if (allocDay !== day) continue
+        }
         rows.push({
           workerId,
           date: new Date(a.date + 'T00:00:00Z'),
@@ -110,6 +123,7 @@ export async function POST(req: Request) {
   return NextResponse.json({
     year: body.year,
     month: body.month,
+    day,
     workersUpserted: Object.keys(workerIdByName).length,
     allocationsDeleted: result.deleted,
     allocationsInserted: result.inserted,

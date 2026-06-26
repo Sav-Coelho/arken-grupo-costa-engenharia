@@ -15,6 +15,8 @@ export async function POST(req: Request) {
   const file = fd.get('file') as File | null
   const year = parseInt(String(fd.get('year') ?? ''), 10)
   const month = parseInt(String(fd.get('month') ?? ''), 10)
+  const dayRaw = String(fd.get('day') ?? '').trim()
+  const day = dayRaw ? parseInt(dayRaw, 10) : null
 
   if (!file) return NextResponse.json({ error: 'Arquivo não enviado' }, { status: 400 })
   if (!year || !month) return NextResponse.json({ error: 'Mês e ano obrigatórios' }, { status: 400 })
@@ -22,7 +24,7 @@ export async function POST(req: Request) {
   const buf = await file.arrayBuffer()
   let parsed
   try {
-    parsed = parsePersonnel(buf, year, month)
+    parsed = parsePersonnel(buf, year, month, day)
   } catch (e) {
     return NextResponse.json({
       error: 'Falha ao ler XLSX: ' + (e instanceof Error ? e.message : String(e)),
@@ -56,6 +58,7 @@ export async function POST(req: Request) {
   return NextResponse.json({
     year: parsed.year,
     month: parsed.month,
+    day: day ?? null,
     daysInMonth: parsed.daysInMonth,
     workers: parsed.workers,
     uniqueAliases: parsed.uniqueAliases,

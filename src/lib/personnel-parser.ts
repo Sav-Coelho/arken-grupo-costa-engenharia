@@ -75,7 +75,9 @@ function classifyCell(raw: string, weekend: boolean): { status: AllocationStatus
   return { status: 'PRESENT', alias: raw.trim() }
 }
 
-export function parsePersonnel(buffer: ArrayBuffer, year: number, month: number): PersonnelParseResult {
+// Se `day` for passado, o resultado contém allocations apenas daquele dia (1 cell por worker).
+// Sem `day`, processa o mês inteiro.
+export function parsePersonnel(buffer: ArrayBuffer, year: number, month: number, day?: number | null): PersonnelParseResult {
   if (month < 1 || month > 12) {
     return { year, month, daysInMonth: 0, workers: [], uniqueAliases: [], errors: [`Mês inválido: ${month}`] }
   }
@@ -103,6 +105,18 @@ export function parsePersonnel(buffer: ArrayBuffer, year: number, month: number)
   }
 
   const dim = daysInMonth(year, month)
+  // Range de dias a processar: [dayStart, dayEnd]. Default = mês inteiro.
+  // Se day passado, processa apenas aquele dia.
+  let dayStart = 1, dayEnd = dim
+  if (day != null) {
+    if (day < 1 || day > dim) {
+      return { year, month, daysInMonth: dim, workers: [], uniqueAliases: [],
+               errors: [`Dia ${day} fora do intervalo válido para ${month}/${year} (1–${dim})`] }
+    }
+    dayStart = day
+    dayEnd = day
+  }
+
   // Colunas C, D, ... = dias 1, 2, ... A coluna do dia D está em índice (D + 1) (0-based)
   // pois A=0, B=1, C=2 corresponde a dia 1
   const errors: string[] = []
@@ -117,7 +131,7 @@ export function parsePersonnel(buffer: ArrayBuffer, year: number, month: number)
     const role = normalize(row[1]) || null
 
     const allocations: ParsedAllocation[] = []
-    for (let d = 1; d <= dim; d++) {
+    for (let d = dayStart; d <= dayEnd; d++) {
       const col = d + 1                       // coluna 0-based
       const raw = normalize(row[col])
       const weekend = isWeekend(year, month, d)
