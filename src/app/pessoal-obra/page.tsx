@@ -737,7 +737,7 @@ function ViewPanel({
           </div>
 
           <div>
-            <div className="card-eyebrow" style={{ marginBottom: 8 }}>Origem dos dados</div>
+            <div className="card-eyebrow" style={{ marginBottom: 8 }}>Quadro de Funcionários em Horário</div>
             <select className="form-select" style={{ width: 320 }}
                     value={snapshotId ?? ''}
                     onChange={e => setSnapshotId(e.target.value ? Number(e.target.value) : null)}>
