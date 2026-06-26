@@ -35,6 +35,13 @@ type AllocRow = {
   projectId: number | null; status: string; rawValue: string | null
 }
 type Period = { year: number; month: number; count: number }
+type SnapshotSummary = {
+  id: number
+  capturedAt: string
+  label: string | null
+  day: number
+  cellCount: number
+}
 type SeriesResponse = {
   availablePeriods: Period[]
   year: number | null; month: number | null; daysInMonth: number
@@ -49,6 +56,28 @@ type SeriesResponse = {
     terminated: number
     dayOff: number
     weekend: number
+  }
+  snapshots: SnapshotSummary[]
+}
+
+type SnapshotDetail = {
+  id: number
+  capturedAt: string
+  label: string | null
+  year: number
+  month: number
+  day: number
+  date: string
+  cells: {
+    workerId: number; workerName: string; workerRole: string | null
+    projectId: number | null; status: string; rawValue: string | null
+  }[]
+  finalAvailable: boolean
+  comparison: {
+    presentInSnapshot: number
+    presentInFinal: number
+    chegaramDepoisIds: number[]
+    saiuAposIds: number[]
   }
 }
 
@@ -168,20 +197,26 @@ function Loading() {
 // ──────────────────────────────────────────────────────────
 //  IMPORT PANEL
 // ──────────────────────────────────────────────────────────
+type ImportMode = 'month' | 'day-final' | 'day-snapshot'
+
 function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; onSaved: (y: number, m: number) => void }) {
   const today = new Date()
   const [year, setYear] = useState(today.getFullYear())
   const [month, setMonth] = useState(today.getMonth() + 1)
-  const [mode, setMode] = useState<'month' | 'day'>('month')
+  const [mode, setMode] = useState<ImportMode>('month')
   const [day, setDay] = useState(today.getDate())
+  const [snapshotLabel, setSnapshotLabel] = useState('')
   const [drag, setDrag] = useState(false)
   const [parsing, setParsing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [preview, setPreview] = useState<ParseResponse | null>(null)
+  const [previewMode, setPreviewMode] = useState<ImportMode>('month')
+  const [previewLabel, setPreviewLabel] = useState<string>('')
   const [pendingMap, setPendingMap] = useState<Record<string, number>>({})
   const fileRef = useRef<HTMLInputElement>(null)
 
   const dim = daysInMonthOf(year, month)
+  const isDayMode = mode !== 'month'
 
   const handleFile = async (f?: File | null) => {
     if (!f) return
@@ -190,12 +225,14 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
     fd.append('file', f)
     fd.append('year', String(year))
     fd.append('month', String(month))
-    if (mode === 'day') fd.append('day', String(day))
+    if (isDayMode) fd.append('day', String(day))
     const r = await fetch('/api/personnel/parse', { method: 'POST', body: fd })
     const d = await r.json()
     setParsing(false)
     if (!r.ok) { showToast(`Erro: ${d.error}`); return }
     setPreview(d)
+    setPreviewMode(mode)
+    setPreviewLabel(snapshotLabel)
     setPendingMap({})
   }
 
@@ -208,10 +245,13 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
     if (!preview) return
     const combined = { ...preview.existingMappings, ...pendingMap }
     setSaving(true)
+    const saveMode = previewMode === 'day-snapshot' ? 'snapshot' : 'final'
     const r = await fetch('/api/personnel/save', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         year: preview.year, month: preview.month, day: preview.day,
+        mode: saveMode,
+        snapshotLabel: previewLabel || null,
         workers: preview.workers,
         aliasMappings: combined,
       }),
@@ -219,9 +259,15 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
     const d = await r.json()
     setSaving(false)
     if (!r.ok) { showToast(`Erro: ${d.error}`); return }
-    const scope = preview.day != null ? `dia ${preview.day}/${preview.month}` : `${MONTH_NAMES[preview.month]}/${preview.year}`
-    showToast(`✓ ${scope}: ${d.workersUpserted} colaboradores · ${d.allocationsInserted} alocações`)
+    if (saveMode === 'snapshot') {
+      const labelTxt = previewLabel ? ` (${previewLabel})` : ''
+      showToast(`✓ Snapshot${labelTxt} do dia ${preview.day}/${preview.month}: ${d.cellsInserted} registros`)
+    } else {
+      const scope = preview.day != null ? `dia ${preview.day}/${preview.month}` : `${MONTH_NAMES[preview.month]}/${preview.year}`
+      showToast(`✓ Fechamento ${scope}: ${d.workersUpserted} colaboradores · ${d.allocationsInserted} alocações`)
+    }
     setPreview(null)
+    setSnapshotLabel('')
     onSaved(preview.year, preview.month)
   }
 
@@ -235,11 +281,10 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
           </div>
         </div>
         <p style={{ fontSize: 13, color: C.textSoft, lineHeight: 1.6, marginBottom: 20 }}>
-          Selecione o <b>mês/ano</b> da planilha e suba o arquivo. O sistema lê uma linha por
-          colaborador (col A = nome, col B = função, col C–AG = dias). Cada célula vira uma
-          alocação diária.
-          {' '}Use <b>Dia específico</b> pra subir apenas a coluna de um dia (atualização diária)
-          ou <b>Mês inteiro</b> pra sobrescrever tudo do mês.
+          O sistema lê uma linha por colaborador (col A = nome, col B = função, col C–AG = dias).
+          {' '}<b>Mês inteiro</b> e <b>Fechamento do dia</b> gravam na base oficial.
+          {' '}<b>Snapshot</b> grava em paralelo (uma "fotografia" do estado da obra naquele momento — útil pra
+          comparar manhã × fim do dia sem perder a verdade do dia).
         </p>
 
         <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
@@ -256,21 +301,26 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
             </select>
           </div>
           <div>
-            <label className="form-label">Escopo da importação *</label>
-            <div style={{ display: 'flex', gap: 6 }}>
+            <label className="form-label">Tipo do upload *</label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <button type="button"
                 className={mode === 'month' ? 'btn btn-primary' : 'btn'}
                 onClick={() => setMode('month')}>
                 Mês inteiro
               </button>
               <button type="button"
-                className={mode === 'day' ? 'btn btn-primary' : 'btn'}
-                onClick={() => setMode('day')}>
-                Dia específico
+                className={mode === 'day-final' ? 'btn btn-primary' : 'btn'}
+                onClick={() => setMode('day-final')}>
+                Fechamento do dia
+              </button>
+              <button type="button"
+                className={mode === 'day-snapshot' ? 'btn btn-primary' : 'btn'}
+                onClick={() => setMode('day-snapshot')}>
+                Snapshot intermediário
               </button>
             </div>
           </div>
-          {mode === 'day' && (
+          {isDayMode && (
             <div>
               <label className="form-label">Dia *</label>
               <select className="form-select" value={day} onChange={e => setDay(Number(e.target.value))} style={{ width: 90 }}>
@@ -280,16 +330,25 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
               </select>
             </div>
           )}
+          {mode === 'day-snapshot' && (
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <label className="form-label">Marcador (opcional)</label>
+              <input className="form-input" value={snapshotLabel}
+                     onChange={e => setSnapshotLabel(e.target.value)}
+                     placeholder='ex: "9h", "Vistoria sócios", "12h"' />
+            </div>
+          )}
         </div>
 
         <div style={{
-          marginBottom: 20, padding: '10px 14px', background: mode === 'day' ? '#fff8e1' : '#f4f7fb',
-          borderLeft: `3px solid ${mode === 'day' ? C.gold : C.navy}`,
+          marginBottom: 20, padding: '10px 14px',
+          background: mode === 'month' ? '#f4f7fb' : mode === 'day-final' ? '#fff8e1' : '#eaf3ec',
+          borderLeft: `3px solid ${mode === 'month' ? C.navy : mode === 'day-final' ? C.gold : C.green}`,
           fontSize: 12, color: C.textSoft, lineHeight: 1.5,
         }}>
-          {mode === 'month'
-            ? <>📅 <b>Substituição completa</b> — todas as alocações de {MONTH_NAMES[month]}/{year} serão apagadas e regravadas pela planilha.</>
-            : <>📆 <b>Atualização diária</b> — apenas as alocações do dia {String(day).padStart(2, '0')}/{String(month).padStart(2, '0')}/{year} serão tocadas. Os outros dias do mês ficam intactos.</>}
+          {mode === 'month' && <>📅 <b>Substituição completa</b> — todas as alocações de {MONTH_NAMES[month]}/{year} serão apagadas e regravadas pela planilha.</>}
+          {mode === 'day-final' && <>📆 <b>Fechamento do dia</b> — apenas as alocações do dia {String(day).padStart(2, '0')}/{String(month).padStart(2, '0')}/{year} serão substituídas. Esta é a verdade oficial do dia.</>}
+          {mode === 'day-snapshot' && <>📸 <b>Snapshot intermediário</b> — uma fotografia do dia {String(day).padStart(2, '0')}/{String(month).padStart(2, '0')}/{year} será criada e arquivada com timestamp. Não toca na verdade oficial do dia. Útil pra registrar "quem estava na obra às 9h".</>}
         </div>
 
         <div
@@ -324,9 +383,12 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
       <div className="card-header">
         <div>
           <div className="card-eyebrow">
-            Prévia · {preview.day != null
-              ? `Dia ${String(preview.day).padStart(2, '0')}/${String(preview.month).padStart(2, '0')}/${preview.year}`
+            Prévia · {previewMode === 'day-snapshot' ? '📸 Snapshot' : previewMode === 'day-final' ? '📆 Fechamento' : '📅 Mês inteiro'}
+            {' · '}
+            {preview.day != null
+              ? `${String(preview.day).padStart(2, '0')}/${String(preview.month).padStart(2, '0')}/${preview.year}`
               : `${MONTH_NAMES[preview.month]}/${preview.year}`}
+            {previewMode === 'day-snapshot' && previewLabel && <> · "{previewLabel}"</>}
           </div>
           <div className="card-title">
             {preview.summary.workerCount} colaboradores · {preview.uniqueAliases.length} obra(s) detectada(s)
@@ -335,7 +397,13 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn" onClick={() => setPreview(null)}>Descartar</button>
           <button className="btn btn-primary" onClick={save} disabled={saving || !allMapped}>
-            {saving ? 'Salvando…' : allMapped ? `Autorizar e salvar (${preview.summary.workerCount} colab.)` : `Mapeie ${preview.pendingAliases.length} obra(s) primeiro`}
+            {saving
+              ? 'Salvando…'
+              : !allMapped
+                ? `Mapeie ${preview.pendingAliases.length} obra(s) primeiro`
+                : previewMode === 'day-snapshot'
+                  ? `Salvar snapshot (${preview.summary.workerCount} colab.)`
+                  : `Autorizar e salvar (${preview.summary.workerCount} colab.)`}
           </button>
         </div>
       </div>
@@ -453,8 +521,33 @@ function ViewPanel({
   onSetPeriod: (year: number, month: number) => void
 }) {
   const [granularity, setGranularity] = useState<Granularity>('month')
-  const [weekIndex, setWeekIndex] = useState(0)            // 0..N-1 (W1, W2, …)
-  const [dayIndex, setDayIndex] = useState(1)              // 1..dim
+  const [weekIndex, setWeekIndex] = useState(0)
+  const [dayIndex, setDayIndex] = useState(1)
+  const [snapshotId, setSnapshotId] = useState<number | null>(null)
+  const [snapshotDetail, setSnapshotDetail] = useState<SnapshotDetail | null>(null)
+  const [snapshotLoading, setSnapshotLoading] = useState(false)
+
+  // Quando snapshotId muda, faz fetch do detalhe
+  useEffect(() => {
+    if (snapshotId == null) { setSnapshotDetail(null); return }
+    let cancelled = false
+    setSnapshotLoading(true)
+    fetch(`/api/snapshots/${snapshotId}`)
+      .then(r => r.json())
+      .then((d: SnapshotDetail) => {
+        if (cancelled) return
+        setSnapshotDetail(d)
+        setSnapshotLoading(false)
+        // Força granularidade pra "day" no dia do snapshot
+        setGranularity('day')
+        setDayIndex(d.day)
+      })
+      .catch(() => { if (!cancelled) setSnapshotLoading(false) })
+    return () => { cancelled = true }
+  }, [snapshotId])
+
+  // Reseta snapshot ao mudar de mês
+  useEffect(() => { setSnapshotId(null) }, [series.year, series.month])
 
   if (series.availablePeriods.length === 0) {
     return (
@@ -490,10 +583,22 @@ function ViewPanel({
 
   const visibleDaysSet = useMemo(() => new Set(visibleDays), [visibleDays])
 
-  // Allocations filtradas pelo range
+  // Allocations efetivas: do snapshot se selecionado, senão das allocations normais
   const effectiveAllocations = useMemo(() => {
+    if (snapshotDetail) {
+      // Converte cells do snapshot pro formato AllocRow (todos têm o mesmo day)
+      return snapshotDetail.cells.map(c => ({
+        workerId: c.workerId,
+        date: snapshotDetail.date,
+        day: snapshotDetail.day,
+        projectId: c.projectId,
+        status: c.status,
+        rawValue: c.rawValue,
+      }))
+    }
     return series.allocations.filter(a => visibleDaysSet.has(a.day))
-  }, [series.allocations, visibleDaysSet])
+  }, [series.allocations, visibleDaysSet, snapshotDetail])
+
 
   // Mapa projectId → cor
   const projectColors = useMemo(() => {
@@ -518,15 +623,17 @@ function ViewPanel({
     return series.workers.filter(w => ids.has(w.id))
   }, [series.workers, effectiveAllocations, selectedProjectIds, granularity])
 
-  // Allocs indexed: [workerId][day] → AllocRow (índice completo, filtragem visual fica no Heatmap)
+  // Allocs indexed: [workerId][day] → AllocRow
+  // Quando snapshot ativo, usa as cells do snapshot. Caso contrário, série completa.
   const allocIndex = useMemo(() => {
     const idx: Record<number, Record<number, AllocRow>> = {}
-    series.allocations.forEach(a => {
+    const source = snapshotDetail ? effectiveAllocations : series.allocations
+    source.forEach(a => {
       if (!idx[a.workerId]) idx[a.workerId] = {}
       idx[a.workerId][a.day] = a
     })
     return idx
-  }, [series.allocations])
+  }, [series.allocations, snapshotDetail, effectiveAllocations])
 
   // Summary recalculado em cima das allocations efetivas
   const effectiveSummary = useMemo(() => {
@@ -630,6 +737,26 @@ function ViewPanel({
           </div>
 
           <div>
+            <div className="card-eyebrow" style={{ marginBottom: 8 }}>Origem dos dados</div>
+            <select className="form-select" style={{ width: 320 }}
+                    value={snapshotId ?? ''}
+                    onChange={e => setSnapshotId(e.target.value ? Number(e.target.value) : null)}>
+              <option value="">📌 Fechamento oficial</option>
+              {series.snapshots.map(s => {
+                const dt = new Date(s.capturedAt)
+                const hh = String(dt.getHours()).padStart(2, '0')
+                const mm = String(dt.getMinutes()).padStart(2, '0')
+                const labelTxt = s.label ? ` "${s.label}"` : ''
+                return (
+                  <option key={s.id} value={s.id}>
+                    📸 Dia {String(s.day).padStart(2, '0')} · {hh}:{mm}{labelTxt} ({s.cellCount} reg.)
+                  </option>
+                )
+              })}
+            </select>
+          </div>
+
+          <div>
             <div className="card-eyebrow" style={{ marginBottom: 8 }}>Granularidade</div>
             <div style={{ display: 'flex', gap: 6 }}>
               {(['month', 'week', 'day'] as Granularity[]).map(g => (
@@ -711,15 +838,128 @@ function ViewPanel({
         </div>
       </div>
 
-      {/* KPIs */}
+      {/* Banner de snapshot ativo */}
+      {snapshotDetail && (
+        <div className="card mb-6" style={{ borderTop: `3px solid ${C.amber}`, padding: '18px 24px' }}>
+          {(() => {
+            const dt = new Date(snapshotDetail.capturedAt)
+            const hh = String(dt.getHours()).padStart(2, '0')
+            const mm = String(dt.getMinutes()).padStart(2, '0')
+            const dd = String(snapshotDetail.day).padStart(2, '0')
+            const mo = String(snapshotDetail.month).padStart(2, '0')
+            return (
+              <>
+                <div style={{ fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: C.amber, fontWeight: 600, marginBottom: 6 }}>
+                  📸 Snapshot {snapshotDetail.label ? `"${snapshotDetail.label}"` : 'intermediário'}
+                </div>
+                <div style={{ fontFamily: 'var(--font-serif), serif', fontSize: 22, color: C.navy, marginBottom: 8 }}>
+                  Fotografia do dia {dd}/{mo}/{snapshotDetail.year} às {hh}:{mm}
+                </div>
+                <p style={{ fontSize: 13, color: C.textSoft, lineHeight: 1.5, margin: 0 }}>
+                  Você está vendo o estado da obra <b>no momento em que essa foto foi tirada</b>.
+                  {snapshotDetail.finalAvailable
+                    ? <> A comparação abaixo cruza com o fechamento oficial do dia.</>
+                    : <> Ainda não há fechamento oficial registrado pra esse dia.</>}
+                </p>
+              </>
+            )
+          })()}
+        </div>
+      )}
+
+      {/* KPIs — comum aos modos */}
       <div className="grid-4 mb-6" style={{ gap: 18 }}>
-        <KpiBig label="Colaboradores" value={String(visibleWorkers.length)} sub={`${series.summary.workerCount} total no mês`} color={C.navy} />
-        <KpiBig label="Dias-homem trabalhados" value={String(effectiveSummary.presentDays)} sub={`presenças efetivas ${subUnit}`} color={C.green} />
-        <KpiBig label="Taxa de presença" value={fmtPct(presenceRate)} sub="presença ÷ dias úteis registrados" color={presenceRate > 0.9 ? C.green : presenceRate > 0.75 ? C.amber : C.red} />
-        <KpiBig label={`Faltas ${subUnit}`} value={String(effectiveSummary.absenceJustified + effectiveSummary.absenceUnjustified)}
-                sub={`${effectiveSummary.absenceJustified} justif. · ${effectiveSummary.absenceUnjustified} não justif.`}
-                color={effectiveSummary.absenceUnjustified > effectiveSummary.absenceJustified ? C.red : C.amber} />
+        <KpiBig
+          label={snapshotDetail ? 'Colaboradores no snapshot' : 'Colaboradores'}
+          value={String(visibleWorkers.length)}
+          sub={snapshotDetail ? `${snapshotDetail.cells.length} registros lidos` : `${series.summary.workerCount} total no mês`}
+          color={C.navy} />
+        <KpiBig
+          label={snapshotDetail ? 'Presentes no snapshot' : 'Dias-homem trabalhados'}
+          value={String(effectiveSummary.presentDays)}
+          sub={snapshotDetail
+            ? (snapshotDetail.label ? `às ${new Date(snapshotDetail.capturedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}` : `presentes no momento`)
+            : `presenças efetivas ${subUnit}`}
+          color={C.green} />
+        <KpiBig
+          label="Taxa de presença"
+          value={fmtPct(presenceRate)}
+          sub={snapshotDetail ? 'no momento da foto' : 'presença ÷ dias úteis registrados'}
+          color={presenceRate > 0.9 ? C.green : presenceRate > 0.75 ? C.amber : C.red} />
+        <KpiBig
+          label={snapshotDetail ? 'Faltas no snapshot' : `Faltas ${subUnit}`}
+          value={String(effectiveSummary.absenceJustified + effectiveSummary.absenceUnjustified)}
+          sub={`${effectiveSummary.absenceJustified} justif. · ${effectiveSummary.absenceUnjustified} não justif.`}
+          color={effectiveSummary.absenceUnjustified > effectiveSummary.absenceJustified ? C.red : C.amber} />
       </div>
+
+      {/* KPI comparativo: chegaram depois / saíram depois */}
+      {snapshotDetail && snapshotDetail.finalAvailable && (
+        <div className="grid-2 mb-6" style={{ gap: 18 }}>
+          <KpiBig
+            label="Chegaram depois do snapshot"
+            value={String(snapshotDetail.comparison.chegaramDepoisIds.length)}
+            sub={snapshotDetail.comparison.chegaramDepoisIds.length === 0
+              ? 'todo mundo já estava na obra na foto'
+              : `${snapshotDetail.comparison.chegaramDepoisIds.length} pessoa(s) chegou(ram) entre a foto e o fechamento`}
+            color={snapshotDetail.comparison.chegaramDepoisIds.length > 0 ? C.red : C.green} />
+          <KpiBig
+            label="Saíram após o snapshot"
+            value={String(snapshotDetail.comparison.saiuAposIds.length)}
+            sub={snapshotDetail.comparison.saiuAposIds.length === 0
+              ? 'ninguém saiu entre a foto e o fechamento'
+              : `${snapshotDetail.comparison.saiuAposIds.length} pessoa(s) estava(m) na foto mas não no fechamento`}
+            color={snapshotDetail.comparison.saiuAposIds.length > 0 ? C.amber : C.green} />
+        </div>
+      )}
+
+      {/* Lista nominal de quem chegou depois / saiu depois */}
+      {snapshotDetail && snapshotDetail.finalAvailable && (snapshotDetail.comparison.chegaramDepoisIds.length > 0 || snapshotDetail.comparison.saiuAposIds.length > 0) && (
+        <div className="grid-2 mb-6">
+          {snapshotDetail.comparison.chegaramDepoisIds.length > 0 && (
+            <div className="card">
+              <div className="card-header">
+                <div>
+                  <div className="card-eyebrow" style={{ color: C.red }}>Chegaram depois</div>
+                  <div className="card-title">Não estavam na foto, mas aparecem no fechamento</div>
+                </div>
+              </div>
+              <div style={{ fontSize: 13, color: C.textSoft }}>
+                {snapshotDetail.comparison.chegaramDepoisIds.map(wid => {
+                  const w = series.workers.find(ww => ww.id === wid)
+                  return (
+                    <div key={wid} style={{ padding: '8px 0', borderBottom: `1px solid ${C.line}` }}>
+                      <div style={{ fontWeight: 600, color: C.navy }}>{w?.name || `#${wid}`}</div>
+                      <div style={{ fontSize: 11, color: C.textMuted }}>{w?.role || '—'}</div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+          {snapshotDetail.comparison.saiuAposIds.length > 0 && (
+            <div className="card">
+              <div className="card-header">
+                <div>
+                  <div className="card-eyebrow" style={{ color: C.amber }}>Saíram após a foto</div>
+                  <div className="card-title">Estavam na foto, mas não no fechamento</div>
+                </div>
+              </div>
+              <div style={{ fontSize: 13, color: C.textSoft }}>
+                {snapshotDetail.comparison.saiuAposIds.map(wid => {
+                  const w = series.workers.find(ww => ww.id === wid)
+                  return (
+                    <div key={wid} style={{ padding: '8px 0', borderBottom: `1px solid ${C.line}` }}>
+                      <div style={{ fontWeight: 600, color: C.navy }}>{w?.name || `#${wid}`}</div>
+                      <div style={{ fontSize: 11, color: C.textMuted }}>{w?.role || '—'}</div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* HEATMAP — peça central */}
       <div className="card mb-6 card-accent-yellow">

@@ -4,9 +4,13 @@ import { NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
-// Salva os Workers (upsert por nome) e as Allocations do mês.
-// Wipe-and-replace por (year, month): apaga todas as Allocations daquele mês
-// e regrava com os dados da planilha. Permite reimport sem duplicar.
+// Salva os Workers (upsert por nome) e as alocações.
+// Dois modos:
+//   - mode='final' (default): wipe-and-replace em Allocation (a "verdade do dia")
+//   - mode='snapshot': cria um SnapshotBatch + N SnapshotCells (fotografia
+//     intermediária; não toca em Allocation; histórico permanente)
+//
+// Snapshot requer `day` (não faz sentido snapshot do mês inteiro).
 //
 // Antes de salvar, valida que todos os aliases têm mapeamento — qualquer alias
 // sem projectId resulta em erro 400 (não salva nada).
@@ -15,6 +19,8 @@ export async function POST(req: Request) {
     year: number
     month: number
     day?: number | null                        // se passado, wipe-and-replace apenas desse dia
+    mode?: 'final' | 'snapshot'                // default 'final'
+    snapshotLabel?: string | null              // opcional quando mode='snapshot'
     workers: ParsedWorker[]
     aliasMappings: Record<string, number>      // alias → projectId (vindo de mapeamentos novos + existentes)
   }
@@ -23,6 +29,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Ano/mês obrigatórios' }, { status: 400 })
   }
   const day = body.day ?? null
+  const mode = body.mode ?? 'final'
+  if (mode === 'snapshot' && day == null) {
+    return NextResponse.json({ error: 'Snapshot requer dia específico' }, { status: 400 })
+  }
 
   // Valida que todo alias usado tem mapeamento
   const usedAliases = new Set<string>()
@@ -80,7 +90,48 @@ export async function POST(req: Request) {
     }
   }
 
-  // Wipe-and-replace das allocations.
+  if (mode === 'snapshot') {
+    const targetDate = new Date(`${body.year}-${String(body.month).padStart(2, '0')}-${String(day).padStart(2, '0')}T00:00:00Z`)
+    const result = await prisma.$transaction(async tx => {
+      const batch = await tx.snapshotBatch.create({
+        data: {
+          label: body.snapshotLabel?.trim() || null,
+          date: targetDate,
+          year: body.year, month: body.month, day: day!,
+        },
+      })
+      const cells: {
+        batchId: number; workerId: number;
+        projectId: number | null; status: string; rawValue: string | null;
+      }[] = []
+      for (const w of body.workers) {
+        const workerId = workerIdByName[w.name]
+        for (const a of w.allocations) {
+          const allocDay = parseInt(a.date.slice(-2), 10)
+          if (allocDay !== day) continue
+          cells.push({
+            batchId: batch.id,
+            workerId,
+            projectId: a.alias ? body.aliasMappings[a.alias] : null,
+            status: a.status,
+            rawValue: a.rawValue || null,
+          })
+        }
+      }
+      const ins = await tx.snapshotCell.createMany({ data: cells, skipDuplicates: true })
+      return { batchId: batch.id, inserted: ins.count }
+    })
+
+    return NextResponse.json({
+      mode: 'snapshot',
+      year: body.year, month: body.month, day,
+      snapshotBatchId: result.batchId,
+      workersUpserted: Object.keys(workerIdByName).length,
+      cellsInserted: result.inserted,
+    })
+  }
+
+  // mode === 'final': Wipe-and-replace das allocations.
   //  - Sem `day`: substitui todas as allocations de (year, month).
   //  - Com `day`: substitui apenas as do dia específico — dias restantes ficam intactos.
   const result = await prisma.$transaction(async tx => {
@@ -121,6 +172,7 @@ export async function POST(req: Request) {
   })
 
   return NextResponse.json({
+    mode: 'final',
     year: body.year,
     month: body.month,
     day,

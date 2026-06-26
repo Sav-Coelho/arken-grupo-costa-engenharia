@@ -97,6 +97,16 @@ export async function GET(req: NextRequest) {
 
   const daysInMonth = new Date(year, month, 0).getDate()
 
+  // Lista snapshots do mês (pra dropdown no dashboard)
+  const snapshots = await prisma.snapshotBatch.findMany({
+    where: { year, month },
+    orderBy: [{ day: 'asc' }, { capturedAt: 'asc' }],
+    select: {
+      id: true, capturedAt: true, label: true, day: true,
+      _count: { select: { cells: true } },
+    },
+  })
+
   return NextResponse.json({
     availablePeriods,
     year, month, daysInMonth,
@@ -107,5 +117,12 @@ export async function GET(req: NextRequest) {
       workerCount: workers.length,
       presentDays, absenceJustified, absenceUnjustified, terminated, dayOff, weekend,
     },
+    snapshots: snapshots.map(s => ({
+      id: s.id,
+      capturedAt: s.capturedAt.toISOString(),
+      label: s.label,
+      day: s.day,
+      cellCount: s._count.cells,
+    })),
   })
 }
