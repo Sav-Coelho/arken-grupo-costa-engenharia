@@ -6,7 +6,7 @@ import {
   PieChart, Pie,
 } from 'recharts'
 
-type Tab = 'view' | 'import'
+type Tab = 'view' | 'import' | 'compensation'
 
 const MONTH_NAMES = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
                      'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
@@ -42,6 +42,12 @@ type SnapshotSummary = {
   day: number
   cellCount: number
 }
+type CompRow = {
+  workerId: number
+  contractType: string
+  monthlySalary: number
+  dailyBenefit: number
+}
 type SeriesResponse = {
   availablePeriods: Period[]
   year: number | null; month: number | null; daysInMonth: number
@@ -58,6 +64,7 @@ type SeriesResponse = {
     weekend: number
   }
   snapshots: SnapshotSummary[]
+  compensations: CompRow[]
 }
 
 type SnapshotDetail = {
@@ -160,7 +167,7 @@ export default function PessoalObra() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
-          {([['view', 'Visão Geral'], ['import', 'Importar']] as [Tab, string][]).map(([k, label]) => (
+          {([['view', 'Visão Geral'], ['import', 'Importar'], ['compensation', 'Salários & Benefícios']] as [Tab, string][]).map(([k, label]) => (
             <button key={k} className={tab === k ? 'btn btn-primary' : 'btn'} onClick={() => setTab(k)}>
               {label}
             </button>
@@ -179,6 +186,9 @@ export default function PessoalObra() {
                 onToggleProject={toggleProject} onClearProjects={clearProjects}
                 onSetPeriod={setPeriod} />
             : <Loading />
+      )}
+      {tab === 'compensation' && (
+        <CompensationPanel showToast={showToast} />
       )}
       {toast && <div className="toast">{toast}</div>}
     </Shell>
@@ -677,26 +687,74 @@ function ViewPanel({
       .slice(0, 10)
   }, [visibleWorkers, effectiveAllocations])
 
-  // Dias-homem por obra (no range filtrado)
+  // Mapa workerId → comp (pra cálculo de custo)
+  const compByWorker = useMemo(() => {
+    const m = new Map<number, CompRow>()
+    series.compensations.forEach(c => { m.set(c.workerId, c) })
+    return m
+  }, [series.compensations])
+
+  // Função pura: custo de um worker em um dia específico, baseado no status
+  function dailyCostForAllocation(a: AllocRow): number {
+    const c = compByWorker.get(a.workerId)
+    if (!c) return 0
+    if (a.status === 'TERMINATED') return 0
+    const isCelt = c.contractType === 'CELETISTA'
+    const isWeekendDay = a.status === 'WEEKEND'
+    // Salário CELETISTA cobre todo dia. PF/PJ só em dia útil.
+    const salaryPerDay = isCelt ? c.monthlySalary / 30 : c.monthlySalary / 22
+    const benefitPerDay = c.dailyBenefit
+    if (isCelt) {
+      // CELETISTA: salário cobre todo dia; benefício só em dia útil (não WEEKEND)
+      return salaryPerDay + (isWeekendDay ? 0 : benefitPerDay)
+    }
+    // PF/PJ: só em dia útil (WEEKEND não conta)
+    return isWeekendDay ? 0 : (salaryPerDay + benefitPerDay)
+  }
+
+  // Dias-homem + custo por obra (no range filtrado)
   const daysByProject = useMemo(() => {
-    const counts: Record<number, number> = {}
+    const counts: Record<number, { days: number; cost: number }> = {}
     effectiveAllocations.forEach(a => {
       if (a.status === 'PRESENT' && a.projectId != null) {
-        counts[a.projectId] = (counts[a.projectId] || 0) + 1
+        if (!counts[a.projectId]) counts[a.projectId] = { days: 0, cost: 0 }
+        counts[a.projectId].days++
+        counts[a.projectId].cost += dailyCostForAllocation(a)
       }
     })
-    return Object.entries(counts).map(([pid, days]) => {
+    return Object.entries(counts).map(([pid, v]) => {
       const p = series.projects.find(pp => pp.id === Number(pid))
       return {
         projectId: Number(pid),
         code: p?.code || String(pid),
         name: p?.name || `#${pid}`,
         shortName: p ? cleanProjectName(p.name) : `#${pid}`,
-        days,
+        days: v.days,
+        cost: v.cost,
         fill: projectColors[Number(pid)] || C.navy,
       }
-    }).sort((a, b) => b.days - a.days)
-  }, [effectiveAllocations, series.projects, projectColors])
+    }).sort((a, b) => b.cost - a.cost)
+  }, [effectiveAllocations, series.projects, projectColors, compByWorker])
+
+  // Custo agregado do período filtrado
+  const costSummary = useMemo(() => {
+    let totalCost = 0           // todo dia ativo (não TERMINATED)
+    let allocatedCost = 0       // PRESENT com projectId
+    let unallocatedCost = 0     // PRESENT sem projectId + faltas + folgas
+    let workersWithComp = 0
+    const seenWorkers = new Set<number>()
+    effectiveAllocations.forEach(a => {
+      const cost = dailyCostForAllocation(a)
+      totalCost += cost
+      if (a.status === 'PRESENT' && a.projectId != null) allocatedCost += cost
+      else if (cost > 0) unallocatedCost += cost
+      if (!seenWorkers.has(a.workerId)) {
+        seenWorkers.add(a.workerId)
+        if (compByWorker.has(a.workerId)) workersWithComp++
+      }
+    })
+    return { totalCost, allocatedCost, unallocatedCost, workersWithComp, totalWorkers: seenWorkers.size }
+  }, [effectiveAllocations, compByWorker])
 
   // Label do range (pra título do heatmap)
   const rangeLabel = useMemo(() => {
@@ -893,6 +951,31 @@ function ViewPanel({
           color={effectiveSummary.absenceUnjustified > effectiveSummary.absenceJustified ? C.red : C.amber} />
       </div>
 
+      {/* KPIs de custo (quando houver pelo menos 1 comp cadastrada) */}
+      {series.compensations.length > 0 && (
+        <div className="grid-3 mb-6" style={{ gap: 18 }}>
+          <KpiBig
+            label={`Custo total ${subUnit}`}
+            value={costSummary.totalCost.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+            sub={`${costSummary.workersWithComp}/${costSummary.totalWorkers} colab. com salário cadastrado`}
+            color={C.navy} />
+          <KpiBig
+            label="Alocado em obras (PRESENT)"
+            value={costSummary.allocatedCost.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+            sub={costSummary.totalCost > 0
+              ? `${((costSummary.allocatedCost / costSummary.totalCost) * 100).toFixed(1)}% do custo total`
+              : '—'}
+            color={C.green} />
+          <KpiBig
+            label="Não alocado (faltas, folgas)"
+            value={costSummary.unallocatedCost.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+            sub={costSummary.totalCost > 0
+              ? `${((costSummary.unallocatedCost / costSummary.totalCost) * 100).toFixed(1)}% do custo total`
+              : '—'}
+            color={C.amber} />
+        </div>
+      )}
+
       {/* KPI comparativo: chegaram depois / saíram depois */}
       {snapshotDetail && snapshotDetail.finalAvailable && (
         <div className="grid-2 mb-6" style={{ gap: 18 }}>
@@ -986,12 +1069,14 @@ function ViewPanel({
       </div>
 
       <div className="grid-2 mb-6">
-        {/* Dias-homem por obra */}
+        {/* Dias-homem + custo por obra */}
         <div className="card">
           <div className="card-header">
             <div>
               <div className="card-eyebrow">Volume por obra</div>
-              <div className="card-title">Dias-homem trabalhados</div>
+              <div className="card-title">
+                {series.compensations.length > 0 ? 'Custo de pessoal por obra' : 'Dias-homem trabalhados'}
+              </div>
             </div>
           </div>
           {daysByProject.length === 0 ? (
@@ -1000,20 +1085,37 @@ function ViewPanel({
             <ResponsiveContainer width="100%" height={Math.max(220, daysByProject.length * 36 + 40)}>
               <BarChart data={daysByProject} layout="vertical" margin={{ left: 8, right: 24 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-                <XAxis type="number" tick={{ fontSize: 10, fill: C.textSoft }} stroke={C.line} />
+                <XAxis type="number" tick={{ fontSize: 10, fill: C.textSoft }} stroke={C.line}
+                       tickFormatter={v => series.compensations.length > 0
+                         ? (v >= 1000 ? `R$${(v/1000).toFixed(0)}k` : `R$${v.toFixed(0)}`)
+                         : String(v)} />
                 <YAxis type="category" dataKey="shortName" tick={{ fontSize: 11, fill: C.textSoft }}
                        width={160} stroke={C.line} />
                 <Tooltip
-                  formatter={(v: number) => `${v} dias-homem`}
-                  contentStyle={{ background: C.navy, border: 'none', borderRadius: 4, fontSize: 12, padding: '10px 14px' }}
-                  labelStyle={{ color: C.yellow, fontWeight: 600, marginBottom: 6, fontSize: 11 }}
-                  itemStyle={{ color: '#fff', padding: 0 }}
+                  content={(props) => {
+                    const payload = (props as { active?: boolean; payload?: { payload?: { days: number; cost: number; shortName: string } }[] }).payload
+                    const active = (props as { active?: boolean }).active
+                    if (!active || !payload || !payload[0]?.payload) return null
+                    const p = payload[0].payload
+                    return (
+                      <div style={{ background: C.navy, padding: '10px 14px', borderRadius: 4, fontSize: 12, maxWidth: 280 }}>
+                        <div style={{ color: C.yellow, fontWeight: 600, marginBottom: 6, fontSize: 11 }}>{p.shortName}</div>
+                        <div style={{ color: '#fff' }}>Dias-homem: <b>{p.days}</b></div>
+                        {series.compensations.length > 0 && <div style={{ color: '#fff' }}>Custo: <b>{p.cost.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</b></div>}
+                      </div>
+                    )
+                  }}
                 />
-                <Bar dataKey="days" radius={[0, 3, 3, 0]}>
+                <Bar dataKey={series.compensations.length > 0 ? 'cost' : 'days'} radius={[0, 3, 3, 0]}>
                   {daysByProject.map(d => <Cell key={d.projectId} fill={d.fill} />)}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
+          )}
+          {series.compensations.length > 0 && (
+            <div style={{ fontSize: 11, color: C.textMuted, marginTop: 8, textAlign: 'right' }}>
+              Eixo X = custo R$. Hover mostra dias-homem.
+            </div>
           )}
         </div>
 
@@ -1229,6 +1331,445 @@ function Heatmap({
           ))}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────────
+//  COMPENSATION PANEL — Salários & Benefícios
+// ──────────────────────────────────────────────────────────
+type CompWorkerRow = {
+  id: number
+  name: string
+  role: string | null
+  active: boolean
+  compensation: {
+    id: number
+    contractType: string
+    monthlySalary: number
+    dailyBenefit: number
+    benefitPaymentForm: string | null
+    updatedAt: string
+  } | null
+}
+
+type CompParseRow = {
+  rawName: string
+  role: string | null
+  contractType: string
+  contractTypeRaw: string | null
+  monthlySalary: number
+  dailyBenefit: number
+  benefitPaymentForm: string | null
+  matchedWorkerId: number | null
+  matchedWorkerName: string | null
+  matchScore: number | null
+}
+
+type CompParseResponse = {
+  total: number
+  matched: number
+  rows: CompParseRow[]
+  warnings: string[]
+  workers: { id: number; name: string; role: string | null }[]
+}
+
+const fmtBRL = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+
+function dailyCostFor(c: { contractType: string; monthlySalary: number; dailyBenefit: number }) {
+  const divisor = c.contractType === 'CELETISTA' ? 30 : 22
+  return c.monthlySalary / divisor + c.dailyBenefit
+}
+
+function contractLabel(c: string) {
+  if (c === 'CELETISTA') return 'Celetista'
+  if (c === 'CONTRATO_PF') return 'Contrato PF'
+  if (c === 'PJ') return 'PJ'
+  return c
+}
+
+function CompensationPanel({ showToast }: { showToast: (m: string) => void }) {
+  const [rows, setRows] = useState<CompWorkerRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [preview, setPreview] = useState<CompParseResponse | null>(null)
+  const [parsing, setParsing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [drag, setDrag] = useState(false)
+  const [editing, setEditing] = useState<CompWorkerRow | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const load = async () => {
+    setLoading(true)
+    const r = await fetch('/api/compensation').then(x => x.json())
+    setRows(r)
+    setLoading(false)
+  }
+  useEffect(() => { load() }, [])
+
+  const handleFile = async (f?: File | null) => {
+    if (!f) return
+    setParsing(true)
+    const fd = new FormData()
+    fd.append('file', f)
+    const r = await fetch('/api/compensation/parse', { method: 'POST', body: fd })
+    const d = await r.json()
+    setParsing(false)
+    if (!r.ok) { showToast(`Erro: ${d.error}`); return }
+    setPreview(d)
+  }
+
+  const saveAll = async () => {
+    if (!preview) return
+    setSaving(true)
+    const r = await fetch('/api/compensation/save', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows: preview.rows }),
+    })
+    const d = await r.json()
+    setSaving(false)
+    if (!r.ok) { showToast(`Erro: ${d.error}`); return }
+    showToast(`✓ ${d.created} criadas · ${d.updated} atualizadas · ${d.skipped} ignoradas (sem worker)`)
+    setPreview(null)
+    load()
+  }
+
+  const setRowMatch = (idx: number, workerId: number | null) => {
+    if (!preview) return
+    const newRows = [...preview.rows]
+    const wk = preview.workers.find(w => w.id === workerId) || null
+    newRows[idx] = {
+      ...newRows[idx],
+      matchedWorkerId: workerId,
+      matchedWorkerName: wk?.name ?? null,
+      matchScore: workerId ? 1 : null,
+    }
+    setPreview({ ...preview, rows: newRows, matched: newRows.filter(r => r.matchedWorkerId != null).length })
+  }
+
+  // ─── UI ────────────────────────────────────────────────
+  if (preview) {
+    // Avalia matches duplicados (mais de uma linha apontando pro mesmo worker)
+    const counts: Record<number, number> = {}
+    preview.rows.forEach(r => { if (r.matchedWorkerId != null) counts[r.matchedWorkerId] = (counts[r.matchedWorkerId] || 0) + 1 })
+
+    return (
+      <div className="card mb-6">
+        <div className="card-header">
+          <div>
+            <div className="card-eyebrow">Prévia · Importação de salários e benefícios</div>
+            <div className="card-title">
+              {preview.total} linha(s) na planilha · {preview.matched} com worker atribuído · {preview.total - preview.matched} sem
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn" onClick={() => setPreview(null)}>Descartar</button>
+            <button className="btn btn-primary" onClick={saveAll} disabled={saving || preview.matched === 0}>
+              {saving ? 'Salvando…' : `Autorizar e salvar (${preview.matched})`}
+            </button>
+          </div>
+        </div>
+
+        {preview.warnings.length > 0 && (
+          <details style={{ marginBottom: 16, fontSize: 12, padding: 10, background: '#fff8e1', border: `1px solid ${C.gold}`, borderRadius: 4 }}>
+            <summary style={{ cursor: 'pointer', color: '#7a5c00', fontWeight: 600 }}>⚠ {preview.warnings.length} aviso(s) do parser</summary>
+            <ul style={{ margin: '8px 0 0 16px', color: C.textSoft }}>
+              {preview.warnings.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
+          </details>
+        )}
+
+        <div className="table-wrap" style={{ maxHeight: '60vh' }}>
+          <table>
+            <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
+              <tr>
+                <th>Nome (XLSX)</th>
+                <th>Contrato</th>
+                <th style={{ textAlign: 'right' }}>Salário mês</th>
+                <th style={{ textAlign: 'right' }}>Benef./dia</th>
+                <th style={{ textAlign: 'right' }}>Custo/dia</th>
+                <th>Worker no sistema</th>
+              </tr>
+            </thead>
+            <tbody>
+              {preview.rows.map((r, idx) => {
+                const dup = r.matchedWorkerId != null && counts[r.matchedWorkerId] > 1
+                const noMatch = r.matchedWorkerId == null
+                const cost = dailyCostFor({ contractType: r.contractType, monthlySalary: r.monthlySalary, dailyBenefit: r.dailyBenefit })
+                return (
+                  <tr key={idx} style={{ background: noMatch ? '#fcf3f2' : dup ? '#fff8e1' : undefined }}>
+                    <td style={{ fontSize: 12, fontWeight: 600 }}>
+                      {r.rawName}
+                      {r.role && <div style={{ fontSize: 10, color: C.textMuted, fontWeight: 400 }}>{r.role}</div>}
+                    </td>
+                    <td style={{ fontSize: 11 }}>
+                      <span style={{
+                        fontSize: 10, padding: '2px 6px', borderRadius: 2,
+                        background: r.contractType === 'CELETISTA' ? '#eaf3ec' : '#eef2f9',
+                        color: r.contractType === 'CELETISTA' ? C.green : C.navy,
+                        fontWeight: 600,
+                      }}>{contractLabel(r.contractType)}</span>
+                      {r.contractTypeRaw && r.contractType === 'OUTRO' && (
+                        <div style={{ fontSize: 10, color: C.amber, marginTop: 2 }}>?? "{r.contractTypeRaw}"</div>
+                      )}
+                    </td>
+                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtBRL(r.monthlySalary)}</td>
+                    <td style={{ textAlign: 'right', color: r.dailyBenefit > 0 ? C.textSoft : C.textMuted }}>
+                      {r.dailyBenefit > 0 ? fmtBRL(r.dailyBenefit) : '—'}
+                    </td>
+                    <td style={{ textAlign: 'right', fontWeight: 600, color: C.navy }}>{fmtBRL(cost)}</td>
+                    <td>
+                      <select className="form-select" style={{ fontSize: 12, minWidth: 220 }}
+                              value={r.matchedWorkerId ?? ''}
+                              onChange={e => setRowMatch(idx, e.target.value ? Number(e.target.value) : null)}>
+                        <option value="">— Ignorar —</option>
+                        {preview.workers.map(w => (
+                          <option key={w.id} value={w.id}>{w.name}{w.role ? ` (${w.role})` : ''}</option>
+                        ))}
+                      </select>
+                      {r.matchScore != null && r.matchScore < 1 && (
+                        <div style={{ fontSize: 10, color: C.amber, marginTop: 2 }}>
+                          Match por similaridade ({r.matchScore.toFixed(2)})
+                        </div>
+                      )}
+                      {dup && (
+                        <div style={{ fontSize: 10, color: C.red, marginTop: 2, fontWeight: 600 }}>
+                          ⚠ worker duplicado
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  // Sem preview: mostra upload + lista atual
+  const totalMonthly = rows.filter(r => r.compensation).reduce((s, r) => s + (r.compensation?.monthlySalary || 0), 0)
+  const totalDailyBenefit = rows.filter(r => r.compensation).reduce((s, r) => s + (r.compensation?.dailyBenefit || 0), 0)
+  const withComp = rows.filter(r => r.compensation).length
+  const withoutComp = rows.filter(r => !r.compensation).length
+
+  return (
+    <>
+      <div className="card mb-6">
+        <div className="card-header">
+          <div>
+            <div className="card-eyebrow">Upload</div>
+            <div className="card-title">Importar planilha de salários e benefícios (XLSX)</div>
+          </div>
+        </div>
+        <p style={{ fontSize: 13, color: C.textSoft, lineHeight: 1.6, marginBottom: 18 }}>
+          Esperado: 3 abas — <b>Salários</b> (A:nome B:função C:contrato D:remuneração), <b>Benefícios 1ª/2ª Quinzena</b>
+          {' '}(A:nome B:dias úteis C:custo unitário diário …). O sistema casa nomes por similaridade
+          e mostra prévia editável antes de salvar.
+        </p>
+        <div
+          onClick={() => fileRef.current?.click()}
+          onDragOver={e => { e.preventDefault(); setDrag(true) }}
+          onDragLeave={() => setDrag(false)}
+          onDrop={e => { e.preventDefault(); setDrag(false); handleFile(e.dataTransfer.files?.[0]) }}
+          style={{
+            border: `2px dashed ${drag ? C.yellow : C.line}`,
+            borderRadius: 4, padding: '32px 24px', textAlign: 'center', cursor: 'pointer',
+            background: drag ? 'rgba(245, 197, 24, 0.05)' : '#fafbfc',
+          }}
+        >
+          <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
+                 onChange={e => { handleFile(e.target.files?.[0]); e.target.value = '' }} />
+          <div style={{ fontSize: 32, marginBottom: 8, color: C.navy }}>{parsing ? '◌' : '⬆'}</div>
+          <div style={{ fontFamily: 'var(--font-serif), serif', fontSize: 16, color: C.navy }}>
+            {parsing ? 'Processando…' : 'Clique ou arraste o arquivo "Colaboradores Valores.xlsx"'}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid-3 mb-6" style={{ gap: 18 }}>
+        <KpiBig label="Colaboradores cadastrados" value={String(withComp)} sub={`${withoutComp} sem cadastro`} color={C.navy} />
+        <KpiBig label="Folha mensal estimada" value={fmtBRL(totalMonthly)} sub="soma dos salários cadastrados" color={C.green} />
+        <KpiBig label="Benefício diário (soma)" value={fmtBRL(totalDailyBenefit)} sub={`${withComp} colaboradores`} color={C.gold} />
+      </div>
+
+      <div className="card mb-6">
+        <div className="card-header">
+          <div>
+            <div className="card-eyebrow">Cadastro atual</div>
+            <div className="card-title">Colaboradores e custos</div>
+          </div>
+        </div>
+        {loading ? (
+          <div className="empty-state"><div className="empty-state-icon">◌</div></div>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Colaborador</th>
+                  <th>Função</th>
+                  <th>Contrato</th>
+                  <th style={{ textAlign: 'right' }}>Salário mês</th>
+                  <th style={{ textAlign: 'right' }}>Benef./dia</th>
+                  <th style={{ textAlign: 'right' }}>Custo/dia</th>
+                  <th style={{ width: 100 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => {
+                  const c = r.compensation
+                  const cost = c ? dailyCostFor(c) : 0
+                  return (
+                    <tr key={r.id} style={{ opacity: c ? 1 : 0.55 }}>
+                      <td style={{ fontWeight: 600, fontSize: 13 }}>{r.name}</td>
+                      <td style={{ fontSize: 11, color: C.textMuted }}>{r.role || '—'}</td>
+                      <td style={{ fontSize: 11 }}>
+                        {c ? (
+                          <span style={{
+                            fontSize: 10, padding: '2px 6px', borderRadius: 2,
+                            background: c.contractType === 'CELETISTA' ? '#eaf3ec' : '#eef2f9',
+                            color: c.contractType === 'CELETISTA' ? C.green : C.navy,
+                            fontWeight: 600,
+                          }}>{contractLabel(c.contractType)}</span>
+                        ) : <span style={{ color: C.textMuted, fontStyle: 'italic' }}>não cadastrado</span>}
+                      </td>
+                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{c ? fmtBRL(c.monthlySalary) : '—'}</td>
+                      <td style={{ textAlign: 'right' }}>{c && c.dailyBenefit > 0 ? fmtBRL(c.dailyBenefit) : '—'}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 600, color: C.navy }}>{c ? fmtBRL(cost) : '—'}</td>
+                      <td>
+                        <button className="btn btn-sm" onClick={() => setEditing(r)}>
+                          {c ? 'Editar' : 'Definir'}
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {editing && (
+        <CompensationModal
+          worker={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(msg) => { showToast(msg); setEditing(null); load() }}
+        />
+      )}
+    </>
+  )
+}
+
+function CompensationModal({ worker, onClose, onSaved }: {
+  worker: CompWorkerRow
+  onClose: () => void
+  onSaved: (msg: string) => void
+}) {
+  const c = worker.compensation
+  const [contractType, setContractType] = useState(c?.contractType || 'CONTRATO_PF')
+  const [monthlySalary, setMonthlySalary] = useState(String(c?.monthlySalary || ''))
+  const [dailyBenefit, setDailyBenefit] = useState(String(c?.dailyBenefit || ''))
+  const [paymentForm, setPaymentForm] = useState(c?.benefitPaymentForm || '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const save = async () => {
+    setSaving(true); setError(null)
+    const r = await fetch('/api/compensation', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workerId: worker.id,
+        contractType,
+        monthlySalary: Number(monthlySalary.replace(',', '.')) || 0,
+        dailyBenefit: Number(dailyBenefit.replace(',', '.')) || 0,
+        benefitPaymentForm: paymentForm.trim() || null,
+      }),
+    })
+    const d = await r.json()
+    setSaving(false)
+    if (!r.ok) { setError(d.error || 'Erro ao salvar'); return }
+    onSaved(`✓ ${worker.name} atualizado`)
+  }
+
+  const cost = dailyCostFor({
+    contractType,
+    monthlySalary: Number(monthlySalary.replace(',', '.')) || 0,
+    dailyBenefit: Number(dailyBenefit.replace(',', '.')) || 0,
+  })
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(10, 37, 64, 0.5)', zIndex: 200,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: '#fff', borderTop: `3px solid ${C.yellow}`,
+        borderRadius: 4, width: '100%', maxWidth: 560, padding: 28,
+        boxShadow: '0 20px 40px rgba(10, 37, 64, 0.25)',
+      }}>
+        <div style={{ marginBottom: 22 }}>
+          <div style={{ fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: C.textMuted, fontWeight: 600, marginBottom: 4 }}>
+            Salário e benefício
+          </div>
+          <h2 style={{ fontFamily: 'var(--font-serif), serif', fontSize: 22, color: C.navy, margin: 0 }}>
+            {worker.name}
+          </h2>
+          {worker.role && <div style={{ fontSize: 12, color: C.textMuted, marginTop: 4 }}>{worker.role}</div>}
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Tipo de contrato *</label>
+          <select className="form-select" value={contractType} onChange={e => setContractType(e.target.value)}>
+            <option value="CELETISTA">Celetista (CLT) — salário ÷ 30 dias</option>
+            <option value="CONTRATO_PF">Contrato PF — salário ÷ 22 dias úteis</option>
+            <option value="PJ">PJ — salário ÷ 22 dias úteis</option>
+            <option value="OUTRO">Outro — salário ÷ 22 dias úteis</option>
+          </select>
+        </div>
+
+        <div className="grid-2" style={{ gap: 16 }}>
+          <div className="form-group">
+            <label className="form-label">Salário mensal (R$)</label>
+            <input className="form-input" value={monthlySalary} onChange={e => setMonthlySalary(e.target.value)}
+                   placeholder="ex: 4300" inputMode="decimal" />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Benefício diário (R$)</label>
+            <input className="form-input" value={dailyBenefit} onChange={e => setDailyBenefit(e.target.value)}
+                   placeholder="ex: 53" inputMode="decimal" />
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Forma de pagamento do benefício (opcional)</label>
+          <input className="form-input" value={paymentForm} onChange={e => setPaymentForm(e.target.value)}
+                 placeholder="ex: CRÉDITO EM CONTA / RECARGA SWILE" />
+        </div>
+
+        <div style={{ padding: '12px 14px', background: '#f4f7fb', borderLeft: `3px solid ${C.navy}`, fontSize: 12, marginBottom: 18 }}>
+          <b>Custo/dia calculado:</b> {fmtBRL(cost)}
+          <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>
+            Salário/dia = {fmtBRL((Number(monthlySalary.replace(',', '.')) || 0) / (contractType === 'CELETISTA' ? 30 : 22))}
+            {' · '}Benefício/dia = {fmtBRL(Number(dailyBenefit.replace(',', '.')) || 0)}
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ background: '#fcf3f2', border: `1px solid ${C.red}`, color: C.red,
+                        padding: '10px 14px', borderRadius: 4, fontSize: 13, marginBottom: 16 }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button className="btn" onClick={onClose} disabled={saving}>Cancelar</button>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>
+            {saving ? 'Salvando…' : 'Salvar'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

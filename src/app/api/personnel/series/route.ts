@@ -107,6 +107,15 @@ export async function GET(req: NextRequest) {
     },
   })
 
+  // Compensations dos workers envolvidos (pra cruzamento de custo no dashboard)
+  const workerIds = workers.map(w => w.id)
+  const compensations = workerIds.length > 0
+    ? await prisma.workerCompensation.findMany({
+        where: { workerId: { in: workerIds } },
+        select: { workerId: true, contractType: true, monthlySalary: true, dailyBenefit: true },
+      })
+    : []
+
   return NextResponse.json({
     availablePeriods,
     year, month, daysInMonth,
@@ -124,5 +133,6 @@ export async function GET(req: NextRequest) {
       day: s.day,
       cellCount: s._count.cells,
     })),
+    compensations,
   })
 }

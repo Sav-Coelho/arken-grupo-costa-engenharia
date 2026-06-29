@@ -35,14 +35,28 @@ model ProjectAlias {
 
 // Colaborador (extraído da coluna A da planilha de pessoal)
 model Worker {
-  id             Int             @id @default(autoincrement())
-  name           String          @unique
-  role           String?                       // função/cargo (coluna B; pode mudar entre meses)
-  active         Boolean         @default(true)
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  id             Int                  @id @default(autoincrement())
+  name           String               @unique
+  role           String?                                // função/cargo (coluna B; pode mudar entre meses)
+  active         Boolean              @default(true)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
   allocations    Allocation[]
   snapshotCells  SnapshotCell[]
+  compensation   WorkerCompensation?
+}
+
+// Salário e benefícios do colaborador (vinda da planilha "Colaboradores Valores")
+// Usado pra calcular o custo de pessoal por dia × obra.
+model WorkerCompensation {
+  id                Int      @id @default(autoincrement())
+  workerId          Int      @unique
+  worker            Worker   @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  contractType      String                            // 'CELETISTA' | 'CONTRATO_PF' | 'PJ' | outro
+  monthlySalary     Float                             // R$ mensal
+  dailyBenefit      Float    @default(0)              // R$ por dia (já vem diário do XLSX)
+  benefitPaymentForm String?                          // ex: "CRÉDITO EM CONTA", "RECARGA SWILE"
+  updatedAt         DateTime @updatedAt
 }
 
 // 1 registro por colaborador × dia
