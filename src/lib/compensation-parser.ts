@@ -65,12 +65,12 @@ function jaccard(a: string[], b: string[]): number {
 export function bestNameMatch(target: string, candidates: Iterable<string>, threshold: number = 0.5): { key: string; score: number } | null {
   const targetTokens = tokens(target)
   let best: { key: string; score: number } | null = null
-  for (const c of candidates) {
+  Array.from(candidates).forEach(c => {
     const score = jaccard(targetTokens, tokens(c))
     if (score >= threshold && (best === null || score > best.score)) {
       best = { key: c, score }
     }
-  }
+  })
   return best
 }
 
