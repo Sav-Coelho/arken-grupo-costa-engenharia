@@ -3,12 +3,14 @@ import { NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
-// Recebe a lista revisada pelo analista (workerId já definido por linha).
-// Faz upsert por workerId. Linhas sem workerId são ignoradas.
+// Recebe a lista revisada pelo analista (com workerId associado em cada linha).
+// Aceita tanto `workerId` quanto `matchedWorkerId` (vindo do /parse).
+// Faz upsert por workerId. Linhas sem worker são ignoradas.
 export async function POST(req: Request) {
   const body = await req.json() as {
     rows: {
-      workerId: number | null
+      workerId?: number | null
+      matchedWorkerId?: number | null
       contractType: string
       monthlySalary: number
       dailyBenefit: number
@@ -21,8 +23,9 @@ export async function POST(req: Request) {
 
   let created = 0, updated = 0, skipped = 0
   for (const r of body.rows) {
-    if (r.workerId == null) { skipped++; continue }
-    const existing = await prisma.workerCompensation.findUnique({ where: { workerId: r.workerId } })
+    const workerId = r.workerId ?? r.matchedWorkerId ?? null
+    if (workerId == null) { skipped++; continue }
+    const existing = await prisma.workerCompensation.findUnique({ where: { workerId } })
     const data = {
       contractType: r.contractType || 'OUTRO',
       monthlySalary: Number(r.monthlySalary) || 0,
@@ -30,10 +33,10 @@ export async function POST(req: Request) {
       benefitPaymentForm: r.benefitPaymentForm,
     }
     if (existing) {
-      await prisma.workerCompensation.update({ where: { workerId: r.workerId }, data })
+      await prisma.workerCompensation.update({ where: { workerId }, data })
       updated++
     } else {
-      await prisma.workerCompensation.create({ data: { ...data, workerId: r.workerId } })
+      await prisma.workerCompensation.create({ data: { ...data, workerId } })
       created++
     }
   }
