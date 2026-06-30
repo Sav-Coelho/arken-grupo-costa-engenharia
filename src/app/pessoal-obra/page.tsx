@@ -756,6 +756,70 @@ function ViewPanel({
     return { totalCost, allocatedCost, unallocatedCost, workersWithComp, totalWorkers: seenWorkers.size }
   }, [effectiveAllocations, compByWorker])
 
+  // Custo diário (linha do tempo) — 1 ponto por dia visível
+  // Cada dia: alocado em obras (verde) + não alocado (cinza)
+  const dailyCostSeries = useMemo(() => {
+    const byDay: Record<number, { allocated: number; unallocated: number }> = {}
+    visibleDays.forEach(d => { byDay[d] = { allocated: 0, unallocated: 0 } })
+    effectiveAllocations.forEach(a => {
+      const cost = dailyCostForAllocation(a)
+      if (cost === 0) return
+      if (!byDay[a.day]) byDay[a.day] = { allocated: 0, unallocated: 0 }
+      if (a.status === 'PRESENT' && a.projectId != null) byDay[a.day].allocated += cost
+      else byDay[a.day].unallocated += cost
+    })
+    return visibleDays.map(d => {
+      const wd = new Date(Date.UTC(series.year!, series.month! - 1, d)).getUTCDay()
+      const wdName = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'][wd]
+      return {
+        day: d,
+        label: `${String(d).padStart(2, '0')}`,
+        weekday: wdName,
+        allocated: Math.round(byDay[d]?.allocated || 0),
+        unallocated: Math.round(byDay[d]?.unallocated || 0),
+        total: Math.round((byDay[d]?.allocated || 0) + (byDay[d]?.unallocated || 0)),
+      }
+    })
+  }, [effectiveAllocations, visibleDays, compByWorker, series.year, series.month])
+
+  // Custo por função (no range filtrado, considerando workers visíveis com comp)
+  const costByRole = useMemo(() => {
+    const byRole: Record<string, number> = {}
+    effectiveAllocations.forEach(a => {
+      const cost = dailyCostForAllocation(a)
+      if (cost === 0) return
+      const w = series.workers.find(ww => ww.id === a.workerId)
+      const role = w?.role || 'Sem função'
+      byRole[role] = (byRole[role] || 0) + cost
+    })
+    return Object.entries(byRole)
+      .map(([name, cost]) => ({ name, cost: Math.round(cost) }))
+      .sort((a, b) => b.cost - a.cost)
+      .slice(0, 12)
+  }, [effectiveAllocations, compByWorker, series.workers])
+
+  // Top 10 colaboradores por custo
+  const topWorkersByCost = useMemo(() => {
+    const byWorker: Record<number, number> = {}
+    effectiveAllocations.forEach(a => {
+      const cost = dailyCostForAllocation(a)
+      if (cost === 0) return
+      byWorker[a.workerId] = (byWorker[a.workerId] || 0) + cost
+    })
+    return Object.entries(byWorker)
+      .map(([wid, cost]) => {
+        const w = series.workers.find(ww => ww.id === Number(wid))
+        return {
+          workerId: Number(wid),
+          name: w?.name || `#${wid}`,
+          role: w?.role || '',
+          cost: Math.round(cost),
+        }
+      })
+      .sort((a, b) => b.cost - a.cost)
+      .slice(0, 10)
+  }, [effectiveAllocations, compByWorker, series.workers])
+
   // Label do range (pra título do heatmap)
   const rangeLabel = useMemo(() => {
     const monthLabel = `${MONTH_NAMES[series.month!]}/${series.year}`
@@ -1214,6 +1278,149 @@ function ViewPanel({
           )}
         </div>
       </div>
+
+      {/* ─── BLOCO DE CUSTO (gráficos) ──────────────────────── */}
+      {series.compensations.length > 0 && (
+        <>
+          {/* Custo diário ao longo do mês */}
+          <div className="card mb-6 card-accent-gold">
+            <div className="card-header">
+              <div>
+                <div className="card-eyebrow">Custo · evolução</div>
+                <div className="card-title">Custo diário de pessoal — {rangeLabel}</div>
+              </div>
+            </div>
+            <p style={{ fontSize: 12, color: C.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
+              Barras empilhadas: <b style={{ color: C.green }}>verde</b> = custo alocado em obra (PRESENT);
+              {' '}<b style={{ color: C.amber }}>laranja</b> = custo "ocioso" (faltas, folgas, fim de semana de celetistas).
+            </p>
+            {dailyCostSeries.length === 0 ? (
+              <EmptyMini msg="Sem custo no período" />
+            ) : (
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={dailyCostSeries} margin={{ top: 8, right: 24, bottom: 4, left: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: C.textSoft }} stroke={C.line} />
+                  <YAxis tick={{ fontSize: 11, fill: C.textSoft }}
+                         tickFormatter={v => v >= 1000 ? `R$${(v/1000).toFixed(0)}k` : `R$${v}`}
+                         stroke={C.line} />
+                  <Tooltip
+                    content={(props) => {
+                      const payload = (props as { active?: boolean; payload?: { payload?: { day: number; weekday: string; allocated: number; unallocated: number; total: number } }[] }).payload
+                      const active = (props as { active?: boolean }).active
+                      if (!active || !payload || !payload[0]?.payload) return null
+                      const p = payload[0].payload
+                      return (
+                        <div style={{ background: C.navy, padding: '10px 14px', borderRadius: 4, fontSize: 12, minWidth: 200 }}>
+                          <div style={{ color: C.yellow, fontWeight: 600, marginBottom: 6, fontSize: 11 }}>
+                            Dia {String(p.day).padStart(2, '0')} · {p.weekday}
+                          </div>
+                          <div style={{ color: C.green }}>Alocado: <b>R$ {p.allocated.toLocaleString('pt-BR')}</b></div>
+                          <div style={{ color: C.amber }}>Não alocado: <b>R$ {p.unallocated.toLocaleString('pt-BR')}</b></div>
+                          <div style={{ color: '#fff', marginTop: 4, paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.2)' }}>
+                            Total: <b>R$ {p.total.toLocaleString('pt-BR')}</b>
+                          </div>
+                        </div>
+                      )
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 11, paddingTop: 12 }} />
+                  <Bar dataKey="allocated" name="Alocado em obra" fill={C.green} stackId="cost" />
+                  <Bar dataKey="unallocated" name="Não alocado" fill={C.amber} stackId="cost" />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+
+          <div className="grid-2 mb-6">
+            {/* Custo por função */}
+            <div className="card">
+              <div className="card-header">
+                <div>
+                  <div className="card-eyebrow">Custo · composição</div>
+                  <div className="card-title">Custo por função</div>
+                </div>
+              </div>
+              {costByRole.length === 0 ? (
+                <EmptyMini msg="Sem custo registrado" />
+              ) : (
+                <ResponsiveContainer width="100%" height={Math.max(260, costByRole.length * 30 + 40)}>
+                  <BarChart data={costByRole} layout="vertical" margin={{ left: 8, right: 24 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                    <XAxis type="number" tick={{ fontSize: 10, fill: C.textSoft }} stroke={C.line}
+                           tickFormatter={v => v >= 1000 ? `R$${(v/1000).toFixed(0)}k` : `R$${v}`} />
+                    <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: C.textSoft }}
+                           width={200} stroke={C.line}
+                           tickFormatter={v => v.length > 28 ? v.slice(0, 26) + '…' : v} />
+                    <Tooltip
+                      formatter={(v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                      contentStyle={{ background: C.navy, border: 'none', borderRadius: 4, fontSize: 12, padding: '10px 14px' }}
+                      labelStyle={{ color: C.yellow, fontWeight: 600, marginBottom: 6, fontSize: 11 }}
+                      itemStyle={{ color: '#fff', padding: 0 }}
+                    />
+                    <Bar dataKey="cost" fill={C.gold} radius={[0, 3, 3, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+
+            {/* Top 10 colaboradores por custo */}
+            <div className="card">
+              <div className="card-header">
+                <div>
+                  <div className="card-eyebrow">Custo · concentração</div>
+                  <div className="card-title">Top 10 — maior custo individual</div>
+                </div>
+              </div>
+              {topWorkersByCost.length === 0 ? (
+                <EmptyMini msg="Sem custo registrado" />
+              ) : (
+                <ResponsiveContainer width="100%" height={Math.max(260, topWorkersByCost.length * 30 + 40)}>
+                  <BarChart data={topWorkersByCost} layout="vertical" margin={{ left: 8, right: 24 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                    <XAxis type="number" tick={{ fontSize: 10, fill: C.textSoft }} stroke={C.line}
+                           tickFormatter={v => v >= 1000 ? `R$${(v/1000).toFixed(0)}k` : `R$${v}`} />
+                    <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: C.textSoft }}
+                           width={180} stroke={C.line}
+                           tickFormatter={v => v.length > 24 ? v.slice(0, 22) + '…' : v} />
+                    <Tooltip
+                      content={(props) => {
+                        const payload = (props as { active?: boolean; payload?: { payload?: { name: string; role: string; cost: number } }[] }).payload
+                        const active = (props as { active?: boolean }).active
+                        if (!active || !payload || !payload[0]?.payload) return null
+                        const p = payload[0].payload
+                        return (
+                          <div style={{ background: C.navy, padding: '10px 14px', borderRadius: 4, fontSize: 12 }}>
+                            <div style={{ color: C.yellow, fontWeight: 600, marginBottom: 4, fontSize: 11 }}>{p.name}</div>
+                            {p.role && <div style={{ color: '#fff', opacity: 0.7, marginBottom: 6 }}>{p.role}</div>}
+                            <div style={{ color: '#fff' }}>Custo: <b>{p.cost.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</b></div>
+                          </div>
+                        )
+                      }}
+                    />
+                    <Bar dataKey="cost" fill={C.navy} radius={[0, 3, 3, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Aviso quando não há comp cadastrada */}
+      {series.compensations.length === 0 && (
+        <div className="card mb-6" style={{ borderLeft: `3px solid ${C.gold}`, background: '#fff8e1' }}>
+          <div style={{ padding: '6px 0' }}>
+            <div style={{ fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#7a5c00', fontWeight: 600, marginBottom: 6 }}>
+              💡 Cadastre os salários
+            </div>
+            <p style={{ fontSize: 13, color: C.textSoft, lineHeight: 1.5, margin: 0 }}>
+              Ainda não há salários e benefícios cadastrados. Vá na aba <b>Salários & Benefícios</b> pra subir a planilha
+              "Colaboradores Valores.xlsx" — aí os gráficos e KPIs de custo aparecem aqui.
+            </p>
+          </div>
+        </div>
+      )}
     </>
   )
 }
