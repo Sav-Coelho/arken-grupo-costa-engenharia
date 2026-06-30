@@ -1133,7 +1133,7 @@ function ViewPanel({
       </div>
 
       <div className="grid-2 mb-6">
-        {/* Dias-homem + custo por obra */}
+        {/* Custo / dias-homem por obra (pizza) */}
         <div className="card">
           <div className="card-header">
             <div>
@@ -1146,40 +1146,53 @@ function ViewPanel({
           {daysByProject.length === 0 ? (
             <EmptyMini msg="Sem presenças no período" />
           ) : (
-            <ResponsiveContainer width="100%" height={Math.max(220, daysByProject.length * 36 + 40)}>
-              <BarChart data={daysByProject} layout="vertical" margin={{ left: 8, right: 24 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-                <XAxis type="number" tick={{ fontSize: 10, fill: C.textSoft }} stroke={C.line}
-                       tickFormatter={v => series.compensations.length > 0
-                         ? (v >= 1000 ? `R$${(v/1000).toFixed(0)}k` : `R$${v.toFixed(0)}`)
-                         : String(v)} />
-                <YAxis type="category" dataKey="shortName" tick={{ fontSize: 11, fill: C.textSoft }}
-                       width={160} stroke={C.line} />
-                <Tooltip
-                  content={(props) => {
-                    const payload = (props as { active?: boolean; payload?: { payload?: { days: number; cost: number; shortName: string } }[] }).payload
-                    const active = (props as { active?: boolean }).active
-                    if (!active || !payload || !payload[0]?.payload) return null
-                    const p = payload[0].payload
-                    return (
-                      <div style={{ background: C.navy, padding: '10px 14px', borderRadius: 4, fontSize: 12, maxWidth: 280 }}>
-                        <div style={{ color: C.yellow, fontWeight: 600, marginBottom: 6, fontSize: 11 }}>{p.shortName}</div>
-                        <div style={{ color: '#fff' }}>Dias-homem: <b>{p.days}</b></div>
-                        {series.compensations.length > 0 && <div style={{ color: '#fff' }}>Custo: <b>{p.cost.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</b></div>}
-                      </div>
-                    )
-                  }}
-                />
-                <Bar dataKey={series.compensations.length > 0 ? 'cost' : 'days'} radius={[0, 3, 3, 0]}>
-                  {daysByProject.map(d => <Cell key={d.projectId} fill={d.fill} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          )}
-          {series.compensations.length > 0 && (
-            <div style={{ fontSize: 11, color: C.textMuted, marginTop: 8, textAlign: 'right' }}>
-              Eixo X = custo R$. Hover mostra dias-homem.
-            </div>
+            <>
+              <ResponsiveContainer width="100%" height={Math.max(280, daysByProject.length * 22 + 200)}>
+                <PieChart>
+                  <Pie
+                    data={daysByProject}
+                    dataKey={series.compensations.length > 0 ? 'cost' : 'days'}
+                    nameKey="shortName"
+                    cx="50%" cy="45%"
+                    outerRadius={100}
+                    innerRadius={45}
+                    paddingAngle={2}
+                    label={(d: { shortName: string; percent: number }) =>
+                      d.percent >= 0.05 ? `${d.shortName}: ${(d.percent * 100).toFixed(0)}%` : ''}
+                    labelLine={false}
+                  >
+                    {daysByProject.map(d => <Cell key={d.projectId} fill={d.fill} />)}
+                  </Pie>
+                  <Tooltip
+                    content={(props) => {
+                      const payload = (props as { active?: boolean; payload?: { payload?: { days: number; cost: number; shortName: string; name: string } }[] }).payload
+                      const active = (props as { active?: boolean }).active
+                      if (!active || !payload || !payload[0]?.payload) return null
+                      const p = payload[0].payload
+                      return (
+                        <div style={{ background: C.navy, padding: '10px 14px', borderRadius: 4, fontSize: 12, maxWidth: 280 }}>
+                          <div style={{ color: C.yellow, fontWeight: 600, marginBottom: 6, fontSize: 11 }}>{p.shortName}</div>
+                          <div style={{ color: '#fff' }}>Dias-homem: <b>{p.days}</b></div>
+                          {series.compensations.length > 0 && <div style={{ color: '#fff' }}>Custo: <b>{p.cost.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</b></div>}
+                        </div>
+                      )
+                    }}
+                  />
+                  <Legend
+                    verticalAlign="bottom"
+                    iconType="square"
+                    wrapperStyle={{ fontSize: 11, paddingTop: 12 }}
+                    formatter={(value, entry) => {
+                      const p = (entry as { payload?: { cost?: number; days?: number } }).payload
+                      const val = series.compensations.length > 0 && p?.cost != null
+                        ? p.cost.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 })
+                        : `${p?.days || 0} d-h`
+                      return <span style={{ color: C.textSoft }}>{value} · <b>{val}</b></span>
+                    }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </>
           )}
         </div>
 
