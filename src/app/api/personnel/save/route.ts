@@ -51,7 +51,8 @@ export async function POST(req: Request) {
     }, { status: 400 })
   }
 
-  // Persiste novos aliases (upsert) — os que ainda não estavam no banco
+  // Persiste novos aliases (upsert) — os que ainda não estavam no banco.
+  // projectId === -1 significa "ignorar" (não cria ProjectAlias; cells ficam com projectId=null).
   const existingAliasRows = await prisma.projectAlias.findMany({
     where: { alias: { in: Array.from(usedAliases) } },
   })
@@ -60,6 +61,7 @@ export async function POST(req: Request) {
 
   for (const a of Array.from(usedAliases)) {
     const desiredProjectId = body.aliasMappings[a]
+    if (desiredProjectId === -1) continue    // ignorado — não persiste alias
     if (existingAliasMap[a] === desiredProjectId) continue
     if (a in existingAliasMap) {
       await prisma.projectAlias.update({
@@ -71,11 +73,18 @@ export async function POST(req: Request) {
     }
   }
 
+  // Helper: retorna projectId da alocação (null se ignorado ou sem alias)
+  const projectIdFor = (alias: string | null): number | null => {
+    if (!alias) return null
+    const mapped = body.aliasMappings[alias]
+    return mapped === -1 ? null : mapped
+  }
+
   // Upsert dos workers — em paralelo (pequeno volume)
   const workerIdByName: Record<string, number> = {}
   for (const w of body.workers) {
     const existing = await prisma.worker.findUnique({ where: { name: w.name } })
-    const stillActive = w.allocations.some(a => a.status === 'PRESENT' || a.status === 'ABSENCE_JUSTIFIED' || a.status === 'ABSENCE_UNJUSTIFIED' || a.status === 'DAY_OFF' || a.status === 'WEEKEND')
+    const stillActive = w.allocations.some(a => a.status !== 'TERMINATED')
     if (existing) {
       const updated = await prisma.worker.update({
         where: { id: existing.id },
@@ -112,7 +121,7 @@ export async function POST(req: Request) {
           cells.push({
             batchId: batch.id,
             workerId,
-            projectId: a.alias ? body.aliasMappings[a.alias] : null,
+            projectId: projectIdFor(a.alias),
             status: a.status,
             rawValue: a.rawValue || null,
           })
@@ -160,7 +169,7 @@ export async function POST(req: Request) {
           date: new Date(a.date + 'T00:00:00Z'),
           year: body.year,
           month: body.month,
-          projectId: a.alias ? body.aliasMappings[a.alias] : null,
+          projectId: projectIdFor(a.alias),
           status: a.status,
           rawValue: a.rawValue || null,
         })

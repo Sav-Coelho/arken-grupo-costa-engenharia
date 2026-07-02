@@ -20,6 +20,8 @@ export type AllocationStatus =
   | 'ABSENCE_JUSTIFIED'
   | 'ABSENCE_UNJUSTIFIED'
   | 'TERMINATED'
+  | 'LEAVE'                // afastamento (INSS, atestado longo)
+  | 'VACATION'             // férias
 
 export interface ParsedAllocation {
   day: number                       // 1-31
@@ -65,6 +67,8 @@ function classifyCell(raw: string, weekend: boolean): { status: AllocationStatus
   const up = raw.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
   if (!up) return { status: weekend ? 'WEEKEND' : 'DAY_OFF', alias: null }
   if (up === 'DESLIGADO' || up.includes('DESLIG')) return { status: 'TERMINATED', alias: null }
+  if (up === 'AFASTADO' || up.includes('AFASTAM') || up.startsWith('AFAST')) return { status: 'LEAVE', alias: null }
+  if (up === 'FERIAS' || up === 'FÉRIAS' || up.includes('FERIAS')) return { status: 'VACATION', alias: null }
   if (up.includes('FALTA') && (up.includes('NAO JUST') || up.includes('NÃO JUST') || up.includes('N JUST'))) {
     return { status: 'ABSENCE_UNJUSTIFIED', alias: null }
   }

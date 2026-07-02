@@ -18,6 +18,8 @@ const C = {
   line: '#e3e7ed', textSoft: '#4a5670', textMuted: '#7a869a',
   green: '#197a4a', red: '#b03022', amber: '#c98a14', orange: '#d97e1a',
   weekendBg: '#eceff3', dayOffBg: '#dde2ea', terminatedBg: '#3a3f4a',
+  leaveBg: '#7c3aed',     // afastamento — roxo
+  vacationBg: '#2288b8',  // férias — azul claro
 }
 
 // Paleta de cores pras obras — sequencial, derivada de hue evenly-spaced
@@ -62,6 +64,8 @@ type SeriesResponse = {
     terminated: number
     dayOff: number
     weekend: number
+    leave?: number
+    vacation?: number
   }
   snapshots: SnapshotSummary[]
   compensations: CompRow[]
@@ -448,18 +452,20 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
               {preview.uniqueAliases.map(alias => {
                 const isPending = preview.pendingAliases.includes(alias)
                 const currentId = isPending ? pendingMap[alias] : preview.existingMappings[alias]
+                const isIgnored = pendingMap[alias] === -1
                 return (
-                  <tr key={alias} style={{ background: isPending && !currentId ? '#fff8e1' : undefined }}>
+                  <tr key={alias} style={{ background: isPending && currentId == null ? '#fff8e1' : isIgnored ? '#f4f4f7' : undefined }}>
                     <td style={{ fontWeight: 600 }}>{alias}</td>
                     <td>
                       {isPending ? (
                         <select className="form-select" style={{ maxWidth: 420 }}
-                                value={pendingMap[alias] || ''}
+                                value={pendingMap[alias] ?? ''}
                                 onChange={e => setPendingMap({ ...pendingMap, [alias]: Number(e.target.value) })}>
                           <option value="">— Selecione a obra —</option>
                           {preview.activeProjects.map(p => (
                             <option key={p.id} value={p.id}>{p.code} — {p.name}</option>
                           ))}
+                          <option value="-1">— Ignorar (marcar como não alocado) —</option>
                         </select>
                       ) : (
                         <span style={{ fontSize: 13, color: C.textSoft }}>
@@ -469,9 +475,11 @@ function ImportPanel({ showToast, onSaved }: { showToast: (m: string) => void; o
                     </td>
                     <td>
                       {isPending
-                        ? (pendingMap[alias]
-                            ? <span style={{ color: C.green, fontSize: 12, fontWeight: 600 }}>✓ Novo</span>
-                            : <span style={{ color: C.amber, fontSize: 12, fontWeight: 600 }}>Pendente</span>)
+                        ? (isIgnored
+                            ? <span style={{ color: C.textMuted, fontSize: 12, fontWeight: 600 }}>⊘ Ignorado</span>
+                            : pendingMap[alias]
+                              ? <span style={{ color: C.green, fontSize: 12, fontWeight: 600 }}>✓ Novo</span>
+                              : <span style={{ color: C.amber, fontSize: 12, fontWeight: 600 }}>Pendente</span>)
                         : <span style={{ color: C.textMuted, fontSize: 12 }}>Já mapeado</span>}
                     </td>
                   </tr>
@@ -647,7 +655,8 @@ function ViewPanel({
 
   // Summary recalculado em cima das allocations efetivas
   const effectiveSummary = useMemo(() => {
-    let presentDays = 0, absenceJustified = 0, absenceUnjustified = 0, terminated = 0, dayOff = 0, weekend = 0
+    let presentDays = 0, absenceJustified = 0, absenceUnjustified = 0, terminated = 0
+    let dayOff = 0, weekend = 0, leave = 0, vacation = 0
     for (const a of effectiveAllocations) {
       if (a.status === 'PRESENT') presentDays++
       else if (a.status === 'ABSENCE_JUSTIFIED') absenceJustified++
@@ -655,8 +664,10 @@ function ViewPanel({
       else if (a.status === 'TERMINATED') terminated++
       else if (a.status === 'DAY_OFF') dayOff++
       else if (a.status === 'WEEKEND') weekend++
+      else if (a.status === 'LEAVE') leave++
+      else if (a.status === 'VACATION') vacation++
     }
-    return { presentDays, absenceJustified, absenceUnjustified, terminated, dayOff, weekend }
+    return { presentDays, absenceJustified, absenceUnjustified, terminated, dayOff, weekend, leave, vacation }
   }, [effectiveAllocations])
 
   const totalUtilDias = (effectiveSummary.presentDays + effectiveSummary.absenceJustified + effectiveSummary.absenceUnjustified) || 1
@@ -1236,27 +1247,32 @@ function ViewPanel({
               <div className="card-title">Distribuição de dias por tipo</div>
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={280}>
-            <PieChart>
-              <Pie
-                data={[
-                  { name: 'Trabalhou', value: effectiveSummary.presentDays, color: C.green },
-                  { name: 'Falta justif.', value: effectiveSummary.absenceJustified, color: C.amber },
-                  { name: 'Falta não justif.', value: effectiveSummary.absenceUnjustified, color: C.red },
-                  { name: 'Desligado', value: effectiveSummary.terminated, color: C.terminatedBg },
-                  { name: 'Folga / fim de semana', value: effectiveSummary.dayOff + effectiveSummary.weekend, color: C.dayOffBg },
-                ].filter(d => d.value > 0)}
-                dataKey="value"
-                nameKey="name"
-                outerRadius={90}
-                label={(d: { name: string; value: number; percent: number }) => `${d.name}: ${(d.percent * 100).toFixed(0)}%`}
-                labelLine={false}
-              >
-                {[C.green, C.amber, C.red, C.terminatedBg, C.dayOffBg].map((c, i) => <Cell key={i} fill={c} />)}
-              </Pie>
-              <Tooltip formatter={(v: number) => `${v} dias`} />
-            </PieChart>
-          </ResponsiveContainer>
+          {(() => {
+            const pieData = [
+              { name: 'Trabalhou',          value: effectiveSummary.presentDays,        color: C.green },
+              { name: 'Falta justif.',      value: effectiveSummary.absenceJustified,   color: C.amber },
+              { name: 'Falta não justif.',  value: effectiveSummary.absenceUnjustified, color: C.red },
+              { name: 'Afastado',           value: effectiveSummary.leave,              color: C.leaveBg },
+              { name: 'Férias',             value: effectiveSummary.vacation,           color: C.vacationBg },
+              { name: 'Desligado',          value: effectiveSummary.terminated,         color: C.terminatedBg },
+              { name: 'Folga / fim de semana', value: effectiveSummary.dayOff + effectiveSummary.weekend, color: C.dayOffBg },
+            ].filter(d => (d.value || 0) > 0)
+            return (
+              <ResponsiveContainer width="100%" height={280}>
+                <PieChart>
+                  <Pie
+                    data={pieData}
+                    dataKey="value" nameKey="name" outerRadius={90}
+                    label={(d: { name: string; value: number; percent: number }) => `${d.name}: ${(d.percent * 100).toFixed(0)}%`}
+                    labelLine={false}
+                  >
+                    {pieData.map((d, i) => <Cell key={i} fill={d.color} />)}
+                  </Pie>
+                  <Tooltip formatter={(v: number) => `${v} dias`} />
+                </PieChart>
+              </ResponsiveContainer>
+            )
+          })()}
         </div>
 
         {/* Top faltas */}
@@ -1469,6 +1485,10 @@ function Heatmap({
         return { bg: C.red, fg: '#fff', label: 'Falta não justif.' }
       case 'TERMINATED':
         return { bg: C.terminatedBg, fg: '#fff', label: 'Desligado' }
+      case 'LEAVE':
+        return { bg: C.leaveBg, fg: '#fff', label: 'Afastado' }
+      case 'VACATION':
+        return { bg: C.vacationBg, fg: '#fff', label: 'Férias' }
       case 'WEEKEND':
         return { bg: C.weekendBg, fg: C.textMuted, label: 'Fim de semana' }
       case 'DAY_OFF':
@@ -1544,6 +1564,8 @@ function Heatmap({
                     {a?.status === 'ABSENCE_UNJUSTIFIED' && '✕'}
                     {a?.status === 'ABSENCE_JUSTIFIED' && '◐'}
                     {a?.status === 'TERMINATED' && '◼'}
+                    {a?.status === 'LEAVE' && '⧫'}
+                    {a?.status === 'VACATION' && '★'}
                   </td>
                 )
               })}
