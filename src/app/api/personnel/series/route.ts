@@ -75,7 +75,8 @@ export async function GET(req: NextRequest) {
   const workers = Array.from(workerMap.values()).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
 
   // KPIs
-  let presentDays = 0, absenceJustified = 0, absenceUnjustified = 0, terminated = 0, dayOff = 0, weekend = 0
+  let presentDays = 0, absenceJustified = 0, absenceUnjustified = 0, terminated = 0
+  let dayOff = 0, weekend = 0, leave = 0, vacation = 0
   for (const a of allocs) {
     if (a.status === 'PRESENT') presentDays++
     else if (a.status === 'ABSENCE_JUSTIFIED') absenceJustified++
@@ -83,6 +84,8 @@ export async function GET(req: NextRequest) {
     else if (a.status === 'TERMINATED') terminated++
     else if (a.status === 'DAY_OFF') dayOff++
     else if (a.status === 'WEEKEND') weekend++
+    else if (a.status === 'LEAVE') leave++
+    else if (a.status === 'VACATION') vacation++
   }
 
   // Achatar pro heatmap (dia → workerId → cellInfo)
@@ -125,6 +128,7 @@ export async function GET(req: NextRequest) {
     summary: {
       workerCount: workers.length,
       presentDays, absenceJustified, absenceUnjustified, terminated, dayOff, weekend,
+      leave, vacation,
     },
     snapshots: snapshots.map(s => ({
       id: s.id,
